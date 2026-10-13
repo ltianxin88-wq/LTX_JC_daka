@@ -15,6 +15,14 @@ export interface BridgeResponse<T> {
   error?: { code: string; message: string }
 }
 
+export type RuntimePreparationPhase = 'idle' | 'checking-python' | 'creating-environment' | 'checking-dependencies' | 'installing-dependencies' | 'verifying' | 'ready' | 'error'
+export interface RuntimePreparationView {
+  phase: RuntimePreparationPhase
+  progress: number
+  detail: string
+  updatedAt: string
+}
+
 export interface StatusView {
   application: { name: string; version: string; dataRootAvailable: boolean }
   configuration: { fileAvailable: boolean; valid: boolean; accountConfigured: boolean; webhookConfigured: boolean; browserConfigured: boolean }

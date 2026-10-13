@@ -3,7 +3,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Config } from './config.js'
-import type { BridgeCommand, BridgeResponse, ConfigurationUpdate, ConfigurationView, ManagementAnalyticsFilter, ManagementAnalyticsPersonView, ManagementAnalyticsView, ManagementRunView, PersonalAccountUpdate, PersonalAttendanceView, PersonalAutomationView, PersonalMakeupSubmit, PersonalMakeupView, PersonalRosterUpdate, PersonalRosterView, PersonalScheduleUpdate, ReadCommand, RosterTableView, RosterUpdate } from './contracts.js'
+import type { BridgeCommand, BridgeResponse, ConfigurationUpdate, ConfigurationView, ManagementAnalyticsFilter, ManagementAnalyticsPersonView, ManagementAnalyticsView, ManagementRunView, PersonalAccountUpdate, PersonalAttendanceView, PersonalAutomationView, PersonalMakeupSubmit, PersonalMakeupView, PersonalRosterUpdate, PersonalRosterView, PersonalScheduleUpdate, ReadCommand, RosterTableView, RosterUpdate, RuntimePreparationView } from './contracts.js'
 import { prepareRuntime, RuntimeBootstrapError, type RuntimeBootstrapResult } from './runtime-bootstrap.js'
 
 const MAX_STDOUT_BYTES = 2 * 1024 * 1024
@@ -13,6 +13,7 @@ export class AttendanceBridge {
   readonly bridgePath: string
   readonly requirementsPath: string
   private runtime: Promise<RuntimeBootstrapResult> | undefined
+  private runtimeStatus: RuntimePreparationView = { phase: 'idle', progress: 0, detail: '等待准备运行环境', updatedAt: new Date().toISOString() }
 
   constructor(private readonly config: Config) {
     const bundledRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../backend')
@@ -29,6 +30,10 @@ export class AttendanceBridge {
       throw new BridgeError(response.error?.code ?? 'BRIDGE_FAILED', message)
     }
     return response.data as T
+  }
+
+  readRuntimeStatus(): RuntimePreparationView {
+    return this.runtimeStatus
   }
 
   async updateConfiguration(settings: ConfigurationUpdate): Promise<ConfigurationView> {
@@ -156,8 +161,10 @@ export class AttendanceBridge {
         dataRoot: this.config.dataRoot,
         requirementsPath: this.requirementsPath,
         packageIndexUrl: this.config.pythonPackageIndex,
+        onProgress: status => { this.runtimeStatus = status },
       }).catch(error => {
         this.runtime = undefined
+        this.runtimeStatus = { phase: 'error', progress: this.runtimeStatus.progress, detail: '运行环境准备失败', updatedAt: new Date().toISOString() }
         if (error instanceof RuntimeBootstrapError) throw new BridgeError('RUNTIME_PREPARATION_FAILED', error.message)
         throw new BridgeError('RUNTIME_PREPARATION_FAILED', 'iEPMS 运行环境准备失败。')
       })

@@ -73,6 +73,7 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, bridge: Atten
   }
   if (method !== 'GET') throw httpError(405, '该考勤接口不支持此请求方式。')
   if (path === 'health') return sendJson(res, 200, { ok: true, mode: 'read-only', service: 'iepms-attendance-plugin' })
+  if (path === 'runtime-status') return sendJson(res, 200, bridge.readRuntimeStatus())
   if (path === 'snapshot') {
     const [status, roster, schedule, recentRuns] = await Promise.all([
       bridge.read<StatusView>('status'), bridge.read<RosterView>('roster-summary'),

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import type { RuntimePreparationView } from './contracts.js'
 
 const REQUIRED_IMPORTS = 'import playwright, openpyxl, requests, cv2, numpy, chinese_calendar, portalocker, psutil; import win32crypt'
 const INSTALL_TIMEOUT_MS = 15 * 60 * 1000
@@ -13,6 +14,7 @@ export interface RuntimeBootstrapOptions {
   dataRoot: string
   requirementsPath: string
   packageIndexUrl: string
+  onProgress?: (status: RuntimePreparationView) => void
 }
 
 export interface RuntimeBootstrapResult {
@@ -21,6 +23,10 @@ export interface RuntimeBootstrapResult {
 }
 
 export async function prepareRuntime(options: RuntimeBootstrapOptions): Promise<RuntimeBootstrapResult> {
+  const report = (phase: RuntimePreparationView['phase'], progress: number, detail: string): void => {
+    options.onProgress?.({ phase, progress, detail, updatedAt: new Date().toISOString() })
+  }
+  report('checking-python', 8, '正在检查本机 Python 运行时')
   try {
     await runPython(options.pythonPath, ['--version'], process.env, 15_000)
   } catch {
@@ -29,6 +35,7 @@ export async function prepareRuntime(options: RuntimeBootstrapOptions): Promise<
   const runtimeRoot = join(options.dataRoot, 'python-runtime')
   const runtimePython = join(runtimeRoot, process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
   if (!existsSync(runtimePython)) {
+    report('creating-environment', 20, '正在创建插件专用运行环境')
     try {
       await runPython(options.pythonPath, ['-m', 'venv', runtimeRoot], process.env, 60_000)
     } catch {
@@ -36,16 +43,32 @@ export async function prepareRuntime(options: RuntimeBootstrapOptions): Promise<
     }
   }
   const environment = { ...process.env }
-  if (await importsAvailable(runtimePython, environment)) return { pythonPath: runtimePython, environment }
+  report('checking-dependencies', 35, '正在检查已安装的运行依赖')
+  if (await importsAvailable(runtimePython, environment)) {
+    report('ready', 100, '运行环境已就绪')
+    return { pythonPath: runtimePython, environment }
+  }
 
   const indexes = [...new Set([options.packageIndexUrl, OFFICIAL_PYPI_INDEX])]
-  for (const indexUrl of indexes) {
+  for (const [index, indexUrl] of indexes.entries()) {
     try {
+      const source = index === 0 ? '国内镜像源' : '官方镜像源'
+      let progress = index === 0 ? 45 : 52
+      report('installing-dependencies', progress, `正在从${source}下载运行依赖`)
       await runPython(runtimePython, [
-        '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--upgrade',
+        '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--upgrade', '--prefer-binary', '--only-binary=:all:', '--retries', '1', '--timeout', '20',
         '--index-url', indexUrl, '--requirement', options.requirementsPath,
-      ], environment, INSTALL_TIMEOUT_MS)
-      if (await importsAvailable(runtimePython, environment)) return { pythonPath: runtimePython, environment }
+      ], environment, INSTALL_TIMEOUT_MS, line => {
+        const match = /^Collecting\s+([^\s(]+)/iu.exec(line.trim())
+        if (match === null) return
+        progress = Math.min(85, progress + 4)
+        report('installing-dependencies', progress, `正在下载并安装：${match[1]}`)
+      })
+      report('verifying', 92, '依赖已安装，正在进行可用性验证')
+      if (await importsAvailable(runtimePython, environment)) {
+        report('ready', 100, '运行环境已就绪')
+        return { pythonPath: runtimePython, environment }
+      }
     } catch {
       // Try the official index when the preferred mirror is unavailable.
     }
@@ -62,15 +85,23 @@ async function importsAvailable(pythonPath: string, environment: NodeJS.ProcessE
   }
 }
 
-function runPython(command: string, args: string[], environment: NodeJS.ProcessEnv, timeoutMs: number): Promise<void> {
+function runPython(command: string, args: string[], environment: NodeJS.ProcessEnv, timeoutMs: number, onOutput?: (line: string) => void): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false
-    const child = spawn(command, args, { env: environment, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
+    const child = spawn(command, args, { env: environment, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     const timeout = setTimeout(() => {
       child.kill()
       finish(new Error('timeout'))
     }, timeoutMs)
     let stderr = ''
+    let stdoutRemainder = ''
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', chunk => {
+      const output = `${stdoutRemainder}${chunk}`
+      const lines = output.split(/\r?\n/u)
+      stdoutRemainder = lines.pop() ?? ''
+      for (const line of lines) onOutput?.(line)
+    })
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', chunk => { if (stderr.length < 8 * 1024) stderr += chunk })
     child.on('error', error => { finish(error) })

@@ -21,7 +21,7 @@ import {
 import {
   API_PREFIX, CLIENT_HEADER, CLIENT_NAME, PLUGIN_ID,
   type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type ManagementAnalyticsPersonView, type ManagementAnalyticsRow, type ManagementAnalyticsView, type ManagementRunView,
-  type PersonalAttendanceRecord, type PersonalAttendanceStatus, type PersonalAttendanceView, type PersonalAutomationView, type PersonalMakeupView, type PersonalRosterView,
+  type PersonalAttendanceRecord, type PersonalAttendanceStatus, type PersonalAttendanceView, type PersonalAutomationView, type PersonalMakeupView, type PersonalRosterView, type RuntimePreparationView,
   type RosterRow, type RosterTableView,
 } from './contracts.js'
 import { activatePluginWorkspace, observePluginWorkspace } from './workspace-ownership.js'
@@ -110,6 +110,7 @@ function AttendancePanel({ workspace }: { workspace?: WorkspaceController }) {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot>()
   const [configuration, setConfiguration] = useState<ConfigurationView>()
   const [error, setError] = useState('')
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimePreparationView>({ phase: 'idle', progress: 4, detail: '正在连接本地运行环境', updatedAt: '' })
   const [personalState, setPersonalState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const [personal, setPersonal] = useState<PersonalAttendanceView>()
   const [personalAutomation, setPersonalAutomation] = useState<PersonalAutomationView>()
@@ -132,6 +133,18 @@ function AttendancePanel({ workspace }: { workspace?: WorkspaceController }) {
     }
   }, [])
   useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    if (state !== 'loading') return
+    let active = true
+    const refreshStatus = (): void => {
+      void requestApi<RuntimePreparationView>('runtime-status').then(value => {
+        if (active && isRuntimePreparation(value)) setRuntimeStatus(value)
+      }).catch(() => {})
+    }
+    refreshStatus()
+    const timer = window.setInterval(refreshStatus, 700)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [state])
   const loadPersonal = useCallback(async (background = false): Promise<void> => {
     if (!background) setPersonalState('loading')
     setPersonalError('')
@@ -173,7 +186,7 @@ function AttendancePanel({ workspace }: { workspace?: WorkspaceController }) {
       </div>
     </header>
     <div className="iepms-attendance-scroll" tabIndex={0} aria-label="考勤监控内容">
-      {view === 'management' && state === 'loading' && <PanelState title="正在准备插件运行环境" text="首次使用会自动下载并安装依赖，可能需要几分钟。此过程不会登录 iEPMS，也不会发送通知。" />}
+      {view === 'management' && state === 'loading' && <RuntimePreparationState value={runtimeStatus} />}
       {view === 'management' && state === 'error' && <PanelState title="暂时无法读取考勤状态" text={error} retry={() => { void load() }} />}
       {view === 'management' && state === 'ready' && snapshot !== undefined && configuration !== undefined && <Dashboard
         snapshot={snapshot}
@@ -743,6 +756,17 @@ function Metric({ label, value, detail, good }: { label: string; value: string; 
 function Readiness({ label, ready, missingLabel = '待配置' }: { label: string; ready: boolean; missingLabel?: string }) { return <li><span>{label}</span><strong className={ready ? 'is-ready' : 'is-missing'}>{ready ? '已就绪' : missingLabel}</strong></li> }
 function Empty({ text }: { text: string }) { return <p className="iepms-attendance-empty">{text}</p> }
 function PanelState({ title, text, retry }: { title: string; text: string; retry?: () => void }) { return <div className="iepms-attendance-state" role={retry === undefined ? 'status' : 'alert'}><h2>{title}</h2><p>{text}</p>{retry !== undefined && <button type="button" onClick={retry}>重试</button>}</div> }
+function RuntimePreparationState({ value }: { value: RuntimePreparationView }) {
+  const progress = Math.max(4, Math.min(100, value.progress))
+  const text = value.phase === 'installing-dependencies'
+    ? '首次使用会自动下载并安装依赖，包含浏览器自动化与图像识别组件；下载速度取决于网络。'
+    : '此过程不会登录 iEPMS，也不会发送通知。'
+  return <div className="iepms-attendance-state iepms-runtime-state" role="status" aria-live="polite">
+    <div className="iepms-runtime-state-title"><h2>正在准备插件运行环境</h2><strong>{progress}%</strong></div>
+    <div className="iepms-runtime-progress" role="progressbar" aria-label="插件运行环境准备进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><i style={{ width: `${progress}%` }} /></div>
+    <p className="iepms-runtime-detail">{value.detail}</p><p>{text}</p>
+  </div>
+}
 function taskStateLabel(value: string): string { return value === 'ready' ? '就绪' : value === 'running' ? '运行中' : value === 'disabled' ? '已停用' : '未知' }
 function isSnapshot(value: unknown): value is DashboardSnapshot { return value !== null && typeof value === 'object' && 'status' in value && 'roster' in value && 'schedule' in value && 'recentRuns' in value }
 function isManagementRun(value: unknown): value is ManagementRunView { return value !== null && typeof value === 'object' && ['idle', 'running', 'success', 'error'].includes(String((value as { state?: unknown }).state)) && typeof (value as { message?: unknown }).message === 'string' }
@@ -750,6 +774,12 @@ function isManagementAnalytics(value: unknown): value is ManagementAnalyticsView
   if (value === null || typeof value !== 'object') return false
   const item = value as Partial<ManagementAnalyticsView>
   return typeof item.month === 'string' && Array.isArray(item.rows) && Array.isArray(item.trend) && Array.isArray(item.ranking) && Array.isArray(item.gradeDistribution) && item.metrics !== undefined && item.pagination !== undefined
+}
+function isRuntimePreparation(value: unknown): value is RuntimePreparationView {
+  if (value === null || typeof value !== 'object') return false
+  const source = value as Record<string, unknown>
+  return ['idle', 'checking-python', 'creating-environment', 'checking-dependencies', 'installing-dependencies', 'verifying', 'ready', 'error'].includes(String(source.phase))
+    && typeof source.progress === 'number' && typeof source.detail === 'string'
 }
 function isManagementAnalyticsPerson(value: unknown): value is ManagementAnalyticsPersonView {
   if (value === null || typeof value !== 'object') return false

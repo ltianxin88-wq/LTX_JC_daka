@@ -1,3 +1,4 @@
+import type { RuntimePreparationView } from './contracts.js';
 export declare class RuntimeBootstrapError extends Error {
 }
 export interface RuntimeBootstrapOptions {
@@ -5,6 +6,7 @@ export interface RuntimeBootstrapOptions {
     dataRoot: string;
     requirementsPath: string;
     packageIndexUrl: string;
+    onProgress?: (status: RuntimePreparationView) => void;
 }
 export interface RuntimeBootstrapResult {
     pythonPath: string;

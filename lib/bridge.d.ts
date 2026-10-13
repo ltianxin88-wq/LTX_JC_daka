@@ -1,12 +1,14 @@
 import type { Config } from './config.js';
-import type { ConfigurationUpdate, ConfigurationView, ManagementAnalyticsFilter, ManagementAnalyticsPersonView, ManagementAnalyticsView, ManagementRunView, PersonalAccountUpdate, PersonalAttendanceView, PersonalAutomationView, PersonalMakeupSubmit, PersonalMakeupView, PersonalRosterUpdate, PersonalRosterView, PersonalScheduleUpdate, ReadCommand, RosterTableView, RosterUpdate } from './contracts.js';
+import type { ConfigurationUpdate, ConfigurationView, ManagementAnalyticsFilter, ManagementAnalyticsPersonView, ManagementAnalyticsView, ManagementRunView, PersonalAccountUpdate, PersonalAttendanceView, PersonalAutomationView, PersonalMakeupSubmit, PersonalMakeupView, PersonalRosterUpdate, PersonalRosterView, PersonalScheduleUpdate, ReadCommand, RosterTableView, RosterUpdate, RuntimePreparationView } from './contracts.js';
 export declare class AttendanceBridge {
     private readonly config;
     readonly bridgePath: string;
     readonly requirementsPath: string;
     private runtime;
+    private runtimeStatus;
     constructor(config: Config);
     read<T>(command: ReadCommand): Promise<T>;
+    readRuntimeStatus(): RuntimePreparationView;
     updateConfiguration(settings: ConfigurationUpdate): Promise<ConfigurationView>;
     updatePersonalAccount(settings: PersonalAccountUpdate): Promise<PersonalAttendanceView>;
     startPersonalRun(): Promise<PersonalAutomationView>;
