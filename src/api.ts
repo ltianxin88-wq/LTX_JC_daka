@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { AttendanceBridge, BridgeError } from './bridge.js'
 import {
   API_PREFIX, CLIENT_HEADER, CLIENT_NAME,
-  type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type ManagementRunView, type PersonalAccountUpdate, type PersonalAttendanceView, type PersonalAutomationView, type PersonalMakeupSubmit, type PersonalMakeupView, type PersonalRosterUpdate, type PersonalRosterView, type PersonalScheduleUpdate, type ReadCommand, type RecentRunView, type RosterTableView, type RosterUpdate, type RosterView, type ScheduleView, type StatusView,
+  type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type ManagementAnalyticsFilter, type ManagementAnalyticsPersonView, type ManagementAnalyticsView, type ManagementRunView, type PersonalAccountUpdate, type PersonalAttendanceView, type PersonalAutomationView, type PersonalMakeupSubmit, type PersonalMakeupView, type PersonalRosterUpdate, type PersonalRosterView, type PersonalScheduleUpdate, type ReadCommand, type RecentRunView, type RosterTableView, type RosterUpdate, type RosterView, type ScheduleView, type StatusView,
 } from './contracts.js'
 import type { RuntimeContextLike } from './runtime.js'
 
@@ -82,10 +82,30 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, bridge: Atten
   }
   if (path === 'management-run' && method === 'GET') return sendJson(res, 200, await bridge.read<ManagementRunView>('management-run-read'))
   if (path === 'management-log' && method === 'GET') return sendJson(res, 200, await bridge.read<string[]>('management-log-read'))
+  if (path === 'management-analytics') return sendJson(res, 200, await bridge.readManagementAnalytics(validateManagementAnalyticsQuery(url.searchParams)))
+  if (path === 'management-analytics-person') return sendJson(res, 200, await bridge.readManagementAnalyticsPerson(validateManagementAnalyticsQuery(url.searchParams, true)))
   if (path === 'status' || path === 'roster-summary' || path === 'schedule-status' || path === 'recent-runs') {
     return sendJson(res, 200, await bridge.read(path as ReadCommand))
   }
   throw httpError(404, '考勤状态接口不存在。')
+}
+
+function validateManagementAnalyticsQuery(search: URLSearchParams, requirePerson = false): ManagementAnalyticsFilter {
+  const allowed = new Set(['month', 'name', 'group', 'page', 'pageSize', 'sortBy', 'sortDirection', 'personKey'])
+  for (const key of search.keys()) if (!allowed.has(key)) throw httpError(400, '考勤分析筛选条件包含不支持的字段。')
+  const month = search.get('month') ?? new Date().toISOString().slice(0, 7)
+  if (!/^\d{4}-\d{2}$/u.test(month) || Number(month.slice(5)) < 1 || Number(month.slice(5)) > 12) throw httpError(400, '月份格式无效。')
+  const name = search.get('name') ?? ''
+  const group = search.get('group') ?? ''
+  const personKey = search.get('personKey') ?? ''
+  if (name.length > 100 || group.length > 100 || (personKey && !/^[0-9a-f]{64}$/u.test(personKey)) || (requirePerson && !personKey)) throw httpError(400, '考勤分析筛选条件无效。')
+  const page = Number(search.get('page') ?? '1')
+  const pageSize = Number(search.get('pageSize') ?? '20')
+  if (!Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) throw httpError(400, '分页参数无效。')
+  const sortBy = search.get('sortBy') ?? 'missing'
+  const sortDirection = search.get('sortDirection') ?? 'desc'
+  if (!['name', 'expected', 'actual', 'normal', 'missing', 'madeUp', 'pending', 'expired', 'late', 'early', 'rate', 'grade'].includes(sortBy) || !['asc', 'desc'].includes(sortDirection)) throw httpError(400, '排序参数无效。')
+  return { month, name, group, personKey, page, pageSize, sortBy: sortBy as NonNullable<ManagementAnalyticsFilter['sortBy']>, sortDirection: sortDirection as NonNullable<ManagementAnalyticsFilter['sortDirection']> }
 }
 
 async function requireEmptyJsonBody(req: IncomingMessage): Promise<void> {

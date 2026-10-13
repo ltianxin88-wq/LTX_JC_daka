@@ -4,7 +4,8 @@ export const CLIENT_HEADER = 'x-iepms-attendance-client'
 export const CLIENT_NAME = 'dashboard-web'
 
 export type ReadCommand = 'status' | 'roster-summary' | 'roster-read' | 'personal-roster-read' | 'recent-runs' | 'schedule-status' | 'configuration-read' | 'personal-attendance' | 'personal-automation-read' | 'personal-makeup-read' | 'management-run-read' | 'management-log-read'
-export type BridgeCommand = ReadCommand | 'configuration-update' | 'roster-update' | 'personal-roster-update' | 'personal-account-update' | 'personal-run-start' | 'personal-schedule-update' | 'personal-makeup-submit' | 'management-run-start'
+export type AnalyticsReadCommand = 'management-analytics-read' | 'management-analytics-person-read'
+export type BridgeCommand = ReadCommand | AnalyticsReadCommand | 'configuration-update' | 'roster-update' | 'personal-roster-update' | 'personal-account-update' | 'personal-run-start' | 'personal-schedule-update' | 'personal-makeup-submit' | 'management-run-start'
 
 export interface BridgeResponse<T> {
   ok: boolean
@@ -86,6 +87,11 @@ export interface ManagementRunView {
   lastCompletedAt: string
   message: string
 }
+export type AttendanceGrade = '优秀' | '良好' | '待关注' | '异常较多' | '暂无数据'
+export interface ManagementAnalyticsFilter { month: string; name?: string; group?: string; page?: number; pageSize?: number; sortBy?: 'name' | 'expected' | 'actual' | 'normal' | 'missing' | 'madeUp' | 'pending' | 'expired' | 'late' | 'early' | 'rate' | 'grade'; sortDirection?: 'asc' | 'desc'; personKey?: string }
+export interface ManagementAnalyticsRow { personKey: string; name: string; group: string; city: string; expectedDays: number; actualDays: number; normalCount: number; missingCount: number; madeUpCount: number; pendingMakeupCount: number; expiredMissingCount: number; lateCount: number; earlyCount: number; attendanceRate: number; grade: AttendanceGrade }
+export interface ManagementAnalyticsView { month: string; coverage: { coveredWorkdays: number; firstDate: string; lastDate: string }; metrics: { personCount: number; attendanceRate: number; missingCount: number; pendingMakeupCount: number }; trend: { date: string; missingCount: number; pendingCount: number }[]; ranking: { name: string; group: string; missingCount: number }[]; gradeDistribution: { grade: Exclude<AttendanceGrade, '暂无数据'>; count: number }[]; groups: string[]; pagination: { page: number; pageSize: number; total: number }; rows: ManagementAnalyticsRow[] }
+export interface ManagementAnalyticsPersonView { month: string; person: ManagementAnalyticsRow; records: { date: string; clockIn: string; clockOut: string; workMinutes: number | null; status: PersonalAttendanceStatus; resolution?: 'made-up' | 'pending' | 'expired' }[]; anomalies: { date: string; clockIn: string; clockOut: string; workMinutes: number | null; status: PersonalAttendanceStatus; resolution?: 'made-up' | 'pending' | 'expired' }[] }
 
 export type PersonalAttendanceStatus = 'normal' | 'late' | 'early' | 'missing' | 'checked-in' | 'pending'
 
@@ -101,6 +107,7 @@ export interface PersonalAttendanceView {
   configured: boolean
   accountMasked: string
   records: PersonalAttendanceRecord[]
+  calendar: { workdays: string[] }
   source: { latestAvailable: boolean; historyDays: number }
 }
 

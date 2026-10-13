@@ -35,7 +35,8 @@ if hasattr(sys.stdout, "reconfigure"):
 
 SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 512 * 1024
-READ_COMMANDS = {"status", "roster-summary", "roster-read", "personal-roster-read", "recent-runs", "schedule-status", "configuration-read", "personal-attendance", "personal-automation-read", "personal-makeup-read", "management-run-read", "management-log-read"}
+READ_COMMANDS = {"status", "roster-summary", "roster-read", "personal-roster-read", "recent-runs", "schedule-status", "configuration-read", "personal-attendance", "personal-automation-read", "personal-makeup-read", "management-run-read", "management-log-read", "management-analytics-read", "management-analytics-person-read"}
+FILTERED_READ_COMMANDS = {"management-analytics-read", "management-analytics-person-read"}
 WRITE_COMMANDS = {"configuration-update", "roster-update", "personal-roster-update", "personal-account-update", "personal-run-start", "personal-schedule-update", "personal-makeup-submit", "management-run-start"}
 ALLOWED_COMMANDS = READ_COMMANDS | WRITE_COMMANDS
 SCRIPT_ROOT = Path(__file__).resolve().parent
@@ -46,6 +47,8 @@ if str(RUNTIME_ROOT) not in sys.path:
     sys.path.insert(0, str(RUNTIME_ROOT))
 if os.environ.get("IEPMS_PLUGIN_TEST_RUNTIME") == "1":
     sys.path.insert(0, str(DATA_ROOT))
+
+from attendance_rules import is_late_night_completion
 
 
 def migrate_legacy_data() -> None:
@@ -72,6 +75,7 @@ LOG_FILE = DATA_ROOT / "run_log.txt"
 LAST_DATA_FILE = DATA_ROOT / "last_attendance_data.json"
 PERSONAL_HISTORY_FILE = DATA_ROOT / ".personal_attendance_history.json"
 PERSONAL_RUN_FILE = DATA_ROOT / ".personal_attendance_run.json"
+MANAGEMENT_SYNC_FILE = DATA_ROOT / "management_attendance_sync.json"
 PERSONAL_TASK_PREFIX = "iEPMS_Personal_"
 ROSTER_FIELDS = (
     ("projectName", "项目名称", 200), ("projectCode", "项目号", 100),
@@ -110,9 +114,10 @@ def read_request() -> tuple[str | None, dict[str, Any] | None, tuple[str, str] |
     if command not in ALLOWED_COMMANDS:
         return str(command or "unknown"), None, ("COMMAND_NOT_ALLOWED", "该桥接命令不受支持。")
     if command in READ_COMMANDS:
-        if set(value) != {"version", "command"}:
+        allowed = {"version", "command", "settings"} if command in FILTERED_READ_COMMANDS else {"version", "command"}
+        if set(value) != allowed or (command in FILTERED_READ_COMMANDS and not isinstance(value.get("settings"), dict)):
             return str(command), None, ("INVALID_REQUEST", "只读状态命令不接受额外参数。")
-        return str(command), None, None
+        return str(command), value.get("settings") if command in FILTERED_READ_COMMANDS else None, None
     if set(value) != {"version", "command", "settings"} or not isinstance(value.get("settings"), dict):
         return str(command), None, ("INVALID_REQUEST", "配置更新请求格式无效。")
     return str(command), value["settings"], None
@@ -162,8 +167,10 @@ def status() -> dict[str, Any]:
 
 def configuration_view(config: dict[str, Any] | None = None) -> dict[str, Any]:
     import keyring_utils
+    valid = True
     if config is None:
-        config, _ = read_config()
+        config, valid = read_config()
+    config = ensure_default_credentials(config, valid)
     username = str(config.get("username", "")).strip()
     browser_channel = str(config.get("browser_channel", "chrome")).strip()
     if browser_channel not in {"chrome", "chromium", "msedge"}:
@@ -181,6 +188,23 @@ def configuration_view(config: dict[str, Any] | None = None) -> dict[str, Any]:
         "overnightExemptAttendance": bool(config.get("overnight_exempt_attendance", True)),
         "overnightCheckWorkHours": bool(config.get("overnight_check_work_hours", False)),
     }
+
+
+def ensure_default_credentials(config: dict[str, Any], valid: bool = True) -> dict[str, Any]:
+    """Seed the packaged login only when the user has not configured one yet."""
+    if CONFIG_FILE.exists() and not valid:
+        raise BridgeInputError("现有 config.json 无效，已拒绝覆盖。")
+    if str(config.get("username", "")).strip():
+        return config
+    import keyring_utils
+    from default_credentials import load_packaged_credentials
+    username, password = load_packaged_credentials()
+    with redirect_stdout(sys.stderr):
+        if not keyring_utils.set_password(username, password):
+            raise BridgeInputError("默认账号密码写入本地安全存储失败。")
+    updated = {**config, "username": username}
+    write_config_atomic(updated)
+    return updated
 
 
 def parse_configuration_update(settings: dict[str, Any]) -> dict[str, Any]:
@@ -348,6 +372,18 @@ def ensure_plugin_database() -> None:
                 completed_at TEXT NOT NULL DEFAULT '',
                 message TEXT NOT NULL DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS management_attendance_history (
+                account TEXT NOT NULL,
+                attendance_date TEXT NOT NULL,
+                clock_in TEXT NOT NULL DEFAULT '',
+                clock_out TEXT NOT NULL DEFAULT '',
+                work_minutes INTEGER,
+                status TEXT NOT NULL,
+                captured_at TEXT NOT NULL,
+                PRIMARY KEY (account, attendance_date)
+            );
+            CREATE INDEX IF NOT EXISTS management_attendance_history_date_index
+            ON management_attendance_history(attendance_date);
         """)
         if database_setting(connection, "legacy-import-v1"):
             connection.commit()
@@ -688,7 +724,10 @@ def personal_record_from_latest(username: str) -> dict[str, Any] | None:
     if clock_out == clock_in:
         clock_out = ""
     status_text = " ".join(str(row.get(key, "")) for row in morning + evening for key in ("上班状态", "下班状态", "工时质检"))
-    if "迟到" in status_text:
+    if is_late_night_completion(clock_in, clock_out):
+        # A 23:30-23:59 same-day checkout closes the day as normal attendance.
+        state = "normal"
+    elif "迟到" in status_text:
         state = "late"
     elif "早退" in status_text or "不足" in status_text:
         state = "early"
@@ -770,13 +809,23 @@ def write_personal_history(account_hash: str, records: list[dict[str, Any]]) -> 
         connection.close()
 
 
+def apply_late_night_completion(record: dict[str, Any]) -> dict[str, Any]:
+    """Correct previously cached short-hour records when the late-night rule applies."""
+    if is_late_night_completion(str(record.get("clockIn", "")), str(record.get("clockOut", ""))):
+        return {**record, "status": "normal"}
+    return record
+
+
 def personal_attendance() -> dict[str, Any]:
     import keyring_utils
     username = personal_account()
     if not username:
-        return {"configured": False, "accountMasked": "", "records": [], "source": {"latestAvailable": LAST_DATA_FILE.exists(), "historyDays": 0}}
+        return {"configured": False, "accountMasked": "", "records": [], "calendar": personal_work_calendar([]), "source": {"latestAvailable": LAST_DATA_FILE.exists(), "historyDays": 0}}
     account_hash = hashlib.sha256(username.encode("utf-8")).hexdigest()
-    records = read_personal_history(account_hash)
+    stored_records = read_personal_history(account_hash)
+    records = [apply_late_night_completion(record) for record in stored_records]
+    if records != stored_records:
+        write_personal_history(account_hash, records)
     latest = personal_record_from_latest(username)
     if latest is not None:
         by_date = {str(item["date"]): item for item in records}
@@ -787,6 +836,7 @@ def personal_attendance() -> dict[str, Any]:
         masked = keyring_utils.mask_account(username)
     return {
         "configured": True, "accountMasked": masked, "records": records,
+        "calendar": personal_work_calendar(records),
         "source": {"latestAvailable": bool(records), "historyDays": len(records)},
     }
 
@@ -827,6 +877,30 @@ def is_non_working_day(value: date) -> bool:
         # incomplete local installation is missing it, retain a conservative,
         # deterministic weekend fallback instead of accepting a weekday.
         return value.weekday() >= 5
+
+
+def personal_work_calendar(records: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """Return official workdays for every month represented in the personal view."""
+    today = current_local_datetime().date()
+    first_month = today.replace(day=1)
+    for record in records:
+        try:
+            first_month = min(first_month, parse_iso_date(record.get("date"), "考勤日期").replace(day=1))
+        except BridgeInputError:
+            continue
+
+    workdays: list[str] = []
+    month = first_month
+    current_month = today.replace(day=1)
+    while month <= current_month:
+        next_month = (month.replace(day=28) + timedelta(days=4)).replace(day=1)
+        day = month
+        while day < next_month:
+            if not is_non_working_day(day):
+                workdays.append(day.isoformat())
+            day += timedelta(days=1)
+        month = next_month
+    return {"workdays": workdays}
 
 
 def overtime_reminder_dates(deadline: datetime) -> list[str]:
@@ -949,6 +1023,234 @@ def submit_personal_makeup(settings: dict[str, Any]) -> dict[str, Any]:
     return personal_makeup_view()
 
 
+def management_record_key(account: str) -> str:
+    """Return a non-reversible, stable identifier for a roster account."""
+    return hashlib.sha256(account.encode("utf-8")).hexdigest()
+
+
+def normalize_management_record(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    account = normalize_account(value.get("account"))
+    record = sanitize_personal_record({
+        "date": value.get("date"), "clockIn": value.get("clockIn"),
+        "clockOut": value.get("clockOut"), "workMinutes": value.get("workMinutes"),
+        "status": value.get("status"),
+    })
+    return {"account": account, **record} if account and record is not None else None
+
+
+def import_management_attendance_sync() -> int:
+    """Upsert the monitor's scoped local sync file into plugin-owned SQLite."""
+    if not MANAGEMENT_SYNC_FILE.exists():
+        return 0
+    try:
+        source = json.loads(MANAGEMENT_SYNC_FILE.read_text(encoding="utf-8"))
+        values = source.get("records") if isinstance(source, dict) else None
+    except Exception:
+        return 0
+    if not isinstance(values, list):
+        return 0
+    records = [record for item in values if (record := normalize_management_record(item)) is not None]
+    if not records:
+        return 0
+    ensure_plugin_database()
+    captured_at = str(source.get("capturedAt", "")).strip() if isinstance(source, dict) else ""
+    captured_at = captured_at or datetime.now().isoformat(timespec="seconds")
+    connection = database_connection()
+    try:
+        connection.executemany(
+            """INSERT INTO management_attendance_history (
+                account, attendance_date, clock_in, clock_out, work_minutes, status, captured_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(account, attendance_date) DO UPDATE SET
+                clock_in = excluded.clock_in, clock_out = excluded.clock_out,
+                work_minutes = excluded.work_minutes, status = excluded.status,
+                captured_at = excluded.captured_at""",
+            [(item["account"], item["date"], item["clockIn"], item["clockOut"], item["workMinutes"], item["status"], captured_at) for item in records],
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    return len(records)
+
+
+def parse_management_analytics_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(settings, dict):
+        raise BridgeInputError("考勤分析筛选条件无效。")
+    allowed = {"month", "name", "group", "page", "pageSize", "sortBy", "sortDirection", "personKey"}
+    if set(settings) - allowed:
+        raise BridgeInputError("考勤分析筛选条件包含不支持的字段。")
+    month = str(settings.get("month") or current_local_datetime().strftime("%Y-%m"))
+    if not re.fullmatch(r"\d{4}-\d{2}", month):
+        raise BridgeInputError("月份必须使用 YYYY-MM 格式。")
+    try:
+        datetime.strptime(month + "-01", "%Y-%m-%d")
+    except ValueError as exc:
+        raise BridgeInputError("月份无效。") from exc
+    name = str(settings.get("name", "")).strip()
+    group = str(settings.get("group", "")).strip()
+    person_key = str(settings.get("personKey", "")).strip()
+    if len(name) > 100 or len(group) > 100 or (person_key and not re.fullmatch(r"[0-9a-f]{64}", person_key)):
+        raise BridgeInputError("考勤分析筛选条件无效。")
+    page = settings.get("page", 1)
+    page_size = settings.get("pageSize", 20)
+    if not isinstance(page, int) or not 1 <= page <= 10000 or not isinstance(page_size, int) or not 1 <= page_size <= 2000:
+        raise BridgeInputError("分页参数无效。")
+    sort_by = str(settings.get("sortBy", "missing"))
+    if sort_by not in {"name", "expected", "actual", "normal", "missing", "madeUp", "pending", "expired", "late", "early", "rate", "grade"}:
+        raise BridgeInputError("排序字段无效。")
+    direction = str(settings.get("sortDirection", "desc"))
+    if direction not in {"asc", "desc"}:
+        raise BridgeInputError("排序方向无效。")
+    return {"month": month, "name": name, "group": group, "personKey": person_key, "page": page, "pageSize": page_size, "sortBy": sort_by, "sortDirection": direction}
+
+
+def month_dates(month: str) -> list[date]:
+    first = datetime.strptime(month + "-01", "%Y-%m-%d").date()
+    next_month = (first.replace(day=28) + timedelta(days=4)).replace(day=1)
+    days: list[date] = []
+    day = first
+    while day < next_month:
+        days.append(day)
+        day += timedelta(days=1)
+    return days
+
+
+def management_makeup_by_account(connection: sqlite3.Connection) -> dict[tuple[str, str], str]:
+    rows = connection.execute("SELECT account_hash, attendance_date, status FROM personal_makeup_requests").fetchall()
+    return {(str(row["account_hash"]), str(row["attendance_date"])): str(row["status"]) for row in rows}
+
+
+def management_attendance_resolution(account: str, attendance_date: str, request_status: str, now: datetime) -> str:
+    if request_status in {"approved", "completed", "made-up"}:
+        return "made-up"
+    if request_status:
+        return "pending"
+    return "pending" if now <= makeup_deadline(attendance_date) else "expired"
+
+
+def management_analytics_read(settings: dict[str, Any]) -> dict[str, Any]:
+    query = parse_management_analytics_settings(settings)
+    import_management_attendance_sync()
+    month = query["month"]
+    today = current_local_datetime().date()
+    all_month_days = month_dates(month)
+    month_start, month_end = all_month_days[0].isoformat(), all_month_days[-1].isoformat()
+    connection = database_connection()
+    try:
+        roster = connection.execute(
+            """SELECT project_name, name, city, account FROM roster
+            WHERE account <> '' ORDER BY display_order, id"""
+        ).fetchall()
+        history_rows = connection.execute(
+            """SELECT account, attendance_date, clock_in, clock_out, work_minutes, status
+            FROM management_attendance_history WHERE attendance_date BETWEEN ? AND ?""",
+            (month_start, month_end),
+        ).fetchall()
+        makeup = management_makeup_by_account(connection)
+    finally:
+        connection.close()
+
+    # A date is eligible for analysis only after a management sync observed it.
+    # This prevents absent historical rows from being fabricated as missing cards.
+    covered_dates = {str(row["attendance_date"]) for row in history_rows}
+    expected_dates = [day.isoformat() for day in all_month_days if day <= today and not is_non_working_day(day) and day.isoformat() in covered_dates]
+    histories: dict[str, dict[str, dict[str, Any]]] = {}
+    for row in history_rows:
+        histories.setdefault(str(row["account"]), {})[str(row["attendance_date"])] = {
+            "date": str(row["attendance_date"]), "clockIn": str(row["clock_in"]), "clockOut": str(row["clock_out"]),
+            "workMinutes": row["work_minutes"], "status": str(row["status"]),
+        }
+    people: list[dict[str, Any]] = []
+    for roster_row in roster:
+        account = str(roster_row["account"])
+        record_map = histories.get(account, {})
+        values = [record_map[day] for day in expected_dates if day in record_map]
+        missing_records = [record for record in values if record["status"] == "missing"]
+        resolutions = [management_attendance_resolution(account, record["date"], makeup.get((management_record_key(account), record["date"]), ""), current_local_datetime()) for record in missing_records]
+        expected = len(expected_dates)
+        actual = sum(1 for record in values if record["status"] != "missing")
+        rate = round(actual * 100 / expected, 1) if expected else 0.0
+        if not expected:
+            grade = "暂无数据"
+        elif rate >= 98 and not missing_records:
+            grade = "优秀"
+        elif rate >= 95:
+            grade = "良好"
+        elif rate >= 90:
+            grade = "待关注"
+        else:
+            grade = "异常较多"
+        people.append({
+            "personKey": management_record_key(account), "name": str(roster_row["name"]),
+            "group": str(roster_row["project_name"] or roster_row["city"]), "city": str(roster_row["city"]),
+            "expectedDays": expected, "actualDays": actual,
+            "normalCount": sum(1 for record in values if record["status"] == "normal"),
+            "missingCount": len(missing_records), "madeUpCount": resolutions.count("made-up"),
+            "pendingMakeupCount": resolutions.count("pending"), "expiredMissingCount": resolutions.count("expired"),
+            "lateCount": sum(1 for record in values if record["status"] == "late"),
+            "earlyCount": sum(1 for record in values if record["status"] == "early"),
+            "attendanceRate": rate, "grade": grade,
+        })
+
+    name_filter, group_filter = query["name"].lower(), query["group"].lower()
+    filtered = [item for item in people if (not name_filter or name_filter in item["name"].lower()) and (not group_filter or group_filter in item["group"].lower() or group_filter in item["city"].lower())]
+    sort_fields = {"name": "name", "expected": "expectedDays", "actual": "actualDays", "normal": "normalCount", "missing": "missingCount", "madeUp": "madeUpCount", "pending": "pendingMakeupCount", "expired": "expiredMissingCount", "late": "lateCount", "early": "earlyCount", "rate": "attendanceRate", "grade": "grade"}
+    filtered.sort(key=lambda item: (item[sort_fields[query["sortBy"]]], item["name"]), reverse=query["sortDirection"] == "desc")
+    start = (query["page"] - 1) * query["pageSize"]
+    paged = filtered[start:start + query["pageSize"]]
+    grade_order = ("优秀", "良好", "待关注", "异常较多")
+    trend = []
+    for day in expected_dates:
+        day_missing = 0
+        day_pending = 0
+        for person in people:
+            record = histories.get(next((str(row["account"]) for row in roster if management_record_key(str(row["account"])) == person["personKey"]), ""), {}).get(day)
+            if record is not None and record["status"] == "missing":
+                day_missing += 1
+                if management_attendance_resolution("", day, "", current_local_datetime()) == "pending":
+                    day_pending += 1
+        trend.append({"date": day, "missingCount": day_missing, "pendingCount": day_pending})
+    total_expected = sum(item["expectedDays"] for item in people)
+    total_actual = sum(item["actualDays"] for item in people)
+    return {
+        "month": month, "coverage": {"coveredWorkdays": len(expected_dates), "firstDate": expected_dates[0] if expected_dates else "", "lastDate": expected_dates[-1] if expected_dates else ""},
+        "metrics": {"personCount": len(people), "attendanceRate": round(total_actual * 100 / total_expected, 1) if total_expected else 0.0, "missingCount": sum(item["missingCount"] for item in people), "pendingMakeupCount": sum(item["pendingMakeupCount"] for item in people)},
+        "trend": trend,
+        "ranking": sorted(([{"name": item["name"], "group": item["group"], "missingCount": item["missingCount"]} for item in people]), key=lambda item: (-item["missingCount"], item["name"]))[:10],
+        "gradeDistribution": [{"grade": grade, "count": sum(1 for item in people if item["grade"] == grade)} for grade in grade_order],
+        "groups": sorted({item["group"] for item in people if item["group"]}),
+        "pagination": {"page": query["page"], "pageSize": query["pageSize"], "total": len(filtered)}, "rows": paged,
+    }
+
+
+def management_analytics_person_read(settings: dict[str, Any]) -> dict[str, Any]:
+    query = parse_management_analytics_settings(settings)
+    if not query["personKey"]:
+        raise BridgeInputError("请选择要查看的人员。")
+    overview = management_analytics_read({**query, "page": 1, "pageSize": 2000, "name": "", "group": ""})
+    person = next((item for item in overview["rows"] if item["personKey"] == query["personKey"]), None)
+    if person is None:
+        raise BridgeInputError("未找到该人员的考勤数据。")
+    connection = database_connection()
+    try:
+        roster = connection.execute("SELECT account FROM roster WHERE account <> ''").fetchall()
+        account = next((str(row["account"]) for row in roster if management_record_key(str(row["account"])) == query["personKey"]), "")
+        history = connection.execute("""SELECT attendance_date, clock_in, clock_out, work_minutes, status FROM management_attendance_history
+            WHERE account = ? AND attendance_date LIKE ? ORDER BY attendance_date""", (account, query["month"] + "%")).fetchall()
+        makeup = management_makeup_by_account(connection)
+    finally:
+        connection.close()
+    records = []
+    for row in history:
+        item = {"date": str(row["attendance_date"]), "clockIn": str(row["clock_in"]), "clockOut": str(row["clock_out"]), "workMinutes": row["work_minutes"], "status": str(row["status"])}
+        if item["status"] == "missing":
+            item["resolution"] = management_attendance_resolution(account, item["date"], makeup.get((query["personKey"], item["date"]), ""), current_local_datetime())
+        records.append(item)
+    return {"month": query["month"], "person": person, "records": records, "anomalies": [item for item in records if item["status"] != "normal"]}
+
+
 def process_is_running(pid: Any) -> bool:
     if not isinstance(pid, int) or pid <= 0:
         return False
@@ -1032,6 +1334,7 @@ def personal_login_ready(config: dict[str, Any]) -> bool:
 
 def personal_automation_view() -> dict[str, Any]:
     config, valid = read_config()
+    config = ensure_default_credentials(config, valid)
     configured_account = personal_account()
     enabled, times = personal_schedule_settings()
     return {
@@ -1044,6 +1347,7 @@ def personal_automation_view() -> dict[str, Any]:
 
 def ensure_personal_run_ready() -> tuple[dict[str, Any], str]:
     config, valid = read_config()
+    config = ensure_default_credentials(config, valid)
     if not valid:
         raise BridgeInputError("请先完成本地配置。")
     account = personal_account()
@@ -1147,9 +1451,15 @@ def start_management_run(settings: dict[str, Any]) -> dict[str, Any]:
 def run_management_inspection() -> int:
     started_at = datetime.now().isoformat(timespec="seconds")
     try:
+        config, valid = read_config()
+        ensure_default_credentials(config, valid)
         import iepms_attendance_monitor as monitor
         monitor.main()
+        imported = import_management_attendance_sync()
         write_management_run_state({"state": "success", "pid": None, "startedAt": started_at, "completedAt": datetime.now().isoformat(timespec="seconds"), "message": "管理巡检已结束，请查看运行日志确认结果。"})
+        if imported:
+            with LOG_FILE.open("a", encoding="utf-8") as stream:
+                stream.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [信息] 已同步 {imported} 条考勤分析记录。\n")
         return 0
     except Exception as exc:
         detail = redact(str(exc)) or "未知错误"
@@ -1255,7 +1565,8 @@ def personal_records_from_api(records: list[dict[str, Any]], account: str) -> li
         first, last = min(values), max(values)
         has_pair = last > first
         minutes = round((last - first).total_seconds() / 60) if has_pair else None
-        state = "normal" if has_pair and minutes is not None and minutes >= 480 else "early" if has_pair else "checked-in" if day == today else "missing"
+        late_night_completion = has_pair and is_late_night_completion(first.strftime("%H:%M"), last.strftime("%H:%M"))
+        state = "normal" if late_night_completion or (has_pair and minutes is not None and minutes >= 480) else "early" if has_pair else "checked-in" if day == today else "missing"
         result.append({"date": day, "clockIn": first.strftime("%H:%M"), "clockOut": last.strftime("%H:%M") if has_pair else "", "workMinutes": minutes, "status": state})
     return result
 
@@ -1269,11 +1580,8 @@ def run_personal_inspection() -> int:
     try:
         config, account = ensure_personal_run_ready()
         import keyring_utils  # noqa: F401 - validates the trusted local dependency before login.
-        import license_manager
         import iepms_attendance_monitor as monitor
         from playwright.sync_api import sync_playwright
-        if not license_manager.require_activation("个人考勤巡检"):
-            raise RuntimeError("软件未激活。")
         lock_handle = monitor.acquire_single_instance()
         if lock_handle is None:
             raise RuntimeError("已有巡检任务正在执行。")
@@ -1323,7 +1631,7 @@ def run_personal_inspection() -> int:
         return 0
     except Exception as exc:
         message = str(exc)
-        allowed = ("软件未激活", "已有巡检任务正在执行", "个人账号不在本地花名册中", "iEPMS 登录失败", "个人考勤数据读取失败")
+        allowed = ("已有巡检任务正在执行", "个人账号不在本地花名册中", "iEPMS 登录失败", "个人考勤数据读取失败")
         safe_message = next((value for value in allowed if value in message), "个人巡检执行失败，请检查本地配置和运行日志。")
         write_personal_run_state({"state": "error", "pid": None, "startedAt": started_at, "completedAt": datetime.now().isoformat(timespec="seconds"), "message": safe_message})
         return 1
@@ -1440,6 +1748,8 @@ def main() -> int:
             "personal-makeup-read": personal_makeup_view,
             "management-run-read": read_management_run_state,
             "management-log-read": management_log,
+            "management-analytics-read": lambda: management_analytics_read(settings or {}),
+            "management-analytics-person-read": lambda: management_analytics_person_read(settings or {}),
             "configuration-update": lambda: update_configuration(settings or {}),
             "roster-update": lambda: update_roster(settings or {}),
             "personal-roster-update": lambda: update_personal_roster(settings or {}),

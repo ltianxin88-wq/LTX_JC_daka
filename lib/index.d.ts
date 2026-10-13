@@ -6,11 +6,13 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
     dataRoot: import("@deepseek-ai/schemastery").default<string, string, "defined">;
     legacyImportRoot: import("@deepseek-ai/schemastery").default<string, string, "defined">;
     pythonPath: import("@deepseek-ai/schemastery").default<string, string, "defined">;
+    pythonPackageIndex: import("@deepseek-ai/schemastery").default<string, string, "defined">;
     bridgeTimeoutMs: import("@deepseek-ai/schemastery").default<number, number, "defined">;
 }>>, Schemastery.ObjectT<NoInfer<{
     dataRoot: import("@deepseek-ai/schemastery").default<string, string, "defined">;
     legacyImportRoot: import("@deepseek-ai/schemastery").default<string, string, "defined">;
     pythonPath: import("@deepseek-ai/schemastery").default<string, string, "defined">;
+    pythonPackageIndex: import("@deepseek-ai/schemastery").default<string, string, "defined">;
     bridgeTimeoutMs: import("@deepseek-ai/schemastery").default<number, number, "defined">;
 }>>, "plain">;
 export type Config = AttendanceConfig;

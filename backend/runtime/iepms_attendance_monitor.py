@@ -10,6 +10,7 @@ iepms_attendance_monitor.py - iEPMS 考勤与测试车辆监控核心引擎
 2. 8.0 小时工时质检：
    - 当天最晚打卡时间 减去 当天最早打卡时间。若不足 8 小时，下班巡检时生成【工时不足】告警。
    - 若打卡满 8 小时但在 17 点前离场，仅提示未打有效下班卡，不误报工时不足。
+   - 当日有一条 23:30 前上班卡且在 23:30-23:59 打下班卡时，按正常打卡处理。
 3. 网优测试车辆出车与里程合并：
    - 跨地市测试接力用车严格归属于【出发基准地市】，自动核算总里程并提取去重跨市轨迹。
 4. 钉钉告警与幂等防重：
@@ -40,6 +41,7 @@ from dingtalk_delivery import (
     wait_after_rate_limit,
 )
 from attendance_alerts import compose_evening_alert
+from attendance_rules import has_late_night_completion
 from plugin_paths import data_root
 
 # ============================================================
@@ -62,6 +64,7 @@ SESSION_FILE = os.path.join(SCRIPT_DIR, "session_state.json")
 ROSTER_FILE = os.path.join(SCRIPT_DIR, "roster.xlsx")
 LOCK_FILE = os.path.join(SCRIPT_DIR, "iepms_monitor.lock")
 DEBUG_DIR = SCRIPT_DIR
+ANALYTICS_SYNC_FILE = os.path.join(SCRIPT_DIR, "management_attendance_sync.json")
 
 
 def load_config():
@@ -77,6 +80,75 @@ def load_config():
 def safe_print(*args, **kwargs):
     """兼容旧调用：统一走 logger（文件 + 控制台）"""
     _log(" ".join(str(a) for a in args))
+
+
+def analytics_records_from_project(records, roster_group, today_date):
+    """Build non-notifying, local-only daily attendance facts for the plugin DB.
+
+    A day is emitted only when the upstream returned at least one punch for the
+    project. That coverage guard is what lets the analytics page distinguish an
+    observed missing punch from a day that was never synchronized.
+    """
+    roster_accounts = set()
+    for row in roster_group:
+        account = str(row.get("打卡账号", "")).strip().removesuffix(".0")
+        if account and account.lower() not in {"none", "nan"}:
+            roster_accounts.add(account)
+    by_day_account = {}
+    observed_days = set()
+    for record in records:
+        account = str(record.get("账号", record.get("signUserId", ""))).strip().removesuffix(".0")
+        raw_time = str(record.get("考勤时间", record.get("raw_time", record.get("signDate", "")))).strip()
+        parsed = None
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+            try:
+                parsed = datetime.strptime(raw_time[:19], fmt)
+                break
+            except ValueError:
+                pass
+        if parsed is None:
+            continue
+        day = parsed.strftime("%Y-%m-%d")
+        observed_days.add(day)
+        if account in roster_accounts:
+            by_day_account.setdefault((day, account), []).append(parsed)
+    result = []
+    for day in observed_days:
+        for account in roster_accounts:
+            moments = sorted(by_day_account.get((day, account), []))
+            if not moments:
+                result.append({"account": account, "date": day, "clockIn": "", "clockOut": "", "workMinutes": None, "status": "missing"})
+                continue
+            first, last = moments[0], moments[-1]
+            has_pair = last > first
+            minutes = round((last - first).total_seconds() / 60) if has_pair else None
+            normal = has_pair and (minutes >= 480 or has_late_night_completion(moments))
+            result.append({
+                "account": account, "date": day, "clockIn": first.strftime("%H:%M"),
+                "clockOut": last.strftime("%H:%M") if has_pair else "", "workMinutes": minutes,
+                # During the morning pass a single clock-in is an in-progress
+                # attendance day, not a missing-card exception yet.
+                "status": "normal" if normal else "early" if has_pair else "checked-in" if day == today_date else "missing",
+            })
+    return result
+
+
+def save_analytics_sync(records):
+    """Atomically replace the current run snapshot consumed by the bridge."""
+    by_key = {(str(item.get("account", "")), str(item.get("date", ""))): item for item in records}
+    payload = {"capturedAt": datetime.now().isoformat(timespec="seconds"), "records": list(by_key.values())}
+    temporary = ANALYTICS_SYNC_FILE + ".tmp"
+    try:
+        with open(temporary, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, separators=(",", ":"))
+        os.replace(temporary, ANALYTICS_SYNC_FILE)
+    except Exception as exc:
+        safe_print(f"[警告] 分析考勤记录保存失败: {exc}")
+        try:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+        except Exception:
+            pass
 
 
 # ============================================================
@@ -528,7 +600,7 @@ def check_attendance(records, roster_group, project_name, project_webhook, check
                 earliest_time = min(user_times)
                 latest_time = max(user_times)
                 duration_hours = (latest_time - earliest_time).total_seconds() / 3600.0
-                if duration_hours < 8.0:
+                if duration_hours < 8.0 and not has_late_night_completion(user_times):
                     short_hour_persons.append(f"{emp['name']}({acc})")
                     if emp["mobile"]:
                         short_hour_mobiles.append(emp["mobile"])
@@ -1155,11 +1227,6 @@ def write_heartbeat_ok(date_str, check_mode):
 # 主流程
 # ============================================================
 def main():
-    import license_manager
-    if not license_manager.require_activation("考勤监控"):
-        safe_print("❌ 软件未激活，已终止。请先在主程序内完成授权激活。")
-        return
-
     # 自动清理历史遗留的旧散落状态文件
     push_idempotent.cleanup_legacy_state_files()
 
@@ -1325,6 +1392,7 @@ def main():
             # 对每个项目执行考勤检查
             failed_projects = []
             processed_projects = set()
+            analytics_records = []
             for project_name, group in project_groups.items():
                 # 整轮时间预算：超限则优雅退出，未完成项目统一汇报
                 if time.time() - run_start > run_budget_sec:
@@ -1395,6 +1463,8 @@ def main():
                     processed_projects.add(project_name)
                     continue
 
+                analytics_records.extend(analytics_records_from_project(records, group, today_date))
+
                 # 执行考勤检查
                 check_result = check_attendance(
                     records, group, project_name, project_webhook,
@@ -1421,6 +1491,10 @@ def main():
             else:
                 # 仅在全项目完整成功时写看门狗心跳标记
                 write_heartbeat_ok(today_date, check_mode)
+
+            if analytics_records:
+                save_analytics_sync(analytics_records)
+                safe_print(f"[信息] 已准备 {len(analytics_records)} 条考勤运营分析记录")
 
             total_elapsed = time.time() - run_start
             if failed_projects:

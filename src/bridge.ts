@@ -3,17 +3,21 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Config } from './config.js'
-import type { BridgeCommand, BridgeResponse, ConfigurationUpdate, ConfigurationView, ManagementRunView, PersonalAccountUpdate, PersonalAttendanceView, PersonalAutomationView, PersonalMakeupSubmit, PersonalMakeupView, PersonalRosterUpdate, PersonalRosterView, PersonalScheduleUpdate, ReadCommand, RosterTableView, RosterUpdate } from './contracts.js'
+import type { BridgeCommand, BridgeResponse, ConfigurationUpdate, ConfigurationView, ManagementAnalyticsFilter, ManagementAnalyticsPersonView, ManagementAnalyticsView, ManagementRunView, PersonalAccountUpdate, PersonalAttendanceView, PersonalAutomationView, PersonalMakeupSubmit, PersonalMakeupView, PersonalRosterUpdate, PersonalRosterView, PersonalScheduleUpdate, ReadCommand, RosterTableView, RosterUpdate } from './contracts.js'
+import { prepareRuntime, RuntimeBootstrapError, type RuntimeBootstrapResult } from './runtime-bootstrap.js'
 
 const MAX_STDOUT_BYTES = 2 * 1024 * 1024
 const MAX_STDERR_BYTES = 16 * 1024
 
 export class AttendanceBridge {
   readonly bridgePath: string
+  readonly requirementsPath: string
+  private runtime: Promise<RuntimeBootstrapResult> | undefined
 
   constructor(private readonly config: Config) {
-    const bundledBridge = resolve(dirname(fileURLToPath(import.meta.url)), '../backend/iepms_bridge.py')
-    this.bridgePath = bundledBridge
+    const bundledRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../backend')
+    this.bridgePath = resolve(bundledRoot, 'iepms_bridge.py')
+    this.requirementsPath = resolve(bundledRoot, 'requirements.txt')
     mkdirSync(config.dataRoot, { recursive: true })
   }
 
@@ -60,6 +64,18 @@ export class AttendanceBridge {
     return response.data as ManagementRunView
   }
 
+  async readManagementAnalytics(settings: ManagementAnalyticsFilter): Promise<ManagementAnalyticsView> {
+    const response = await this.invoke('management-analytics-read', settings)
+    if (!response.ok || response.data === undefined) throw new BridgeError(response.error?.code ?? 'BRIDGE_FAILED', response.error?.message ?? '考勤运营分析读取失败。')
+    return response.data as ManagementAnalyticsView
+  }
+
+  async readManagementAnalyticsPerson(settings: ManagementAnalyticsFilter): Promise<ManagementAnalyticsPersonView> {
+    const response = await this.invoke('management-analytics-person-read', settings)
+    if (!response.ok || response.data === undefined) throw new BridgeError(response.error?.code ?? 'BRIDGE_FAILED', response.error?.message ?? '人员考勤详情读取失败。')
+    return response.data as ManagementAnalyticsPersonView
+  }
+
   async updatePersonalSchedule(settings: PersonalScheduleUpdate): Promise<PersonalAutomationView> {
     if (!existsSync(this.bridgePath)) throw new BridgeError('BACKEND_UNAVAILABLE', '未找到 iEPMS 本地桥接程序。')
     const response = await this.invoke('personal-schedule-update', settings)
@@ -90,11 +106,12 @@ export class AttendanceBridge {
     return response.data as PersonalMakeupView
   }
 
-  private invoke(command: BridgeCommand, settings?: ConfigurationUpdate | PersonalAccountUpdate | PersonalScheduleUpdate | PersonalMakeupSubmit | RosterUpdate | PersonalRosterUpdate | Record<string, never>): Promise<BridgeResponse<unknown>> {
+  private async invoke(command: BridgeCommand, settings?: ConfigurationUpdate | ManagementAnalyticsFilter | PersonalAccountUpdate | PersonalScheduleUpdate | PersonalMakeupSubmit | RosterUpdate | PersonalRosterUpdate | Record<string, never>): Promise<BridgeResponse<unknown>> {
+    const runtime = await this.prepareRuntime()
     return new Promise((resolveResult, reject) => {
-      const child = spawn(this.config.pythonPath, [this.bridgePath], {
+      const child = spawn(runtime.pythonPath, [this.bridgePath], {
         cwd: this.config.dataRoot,
-        env: { ...process.env, IEPMS_PLUGIN_DATA_ROOT: this.config.dataRoot, IEPMS_LEGACY_IMPORT_ROOT: this.config.legacyImportRoot, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+        env: { ...runtime.environment, IEPMS_PLUGIN_DATA_ROOT: this.config.dataRoot, IEPMS_LEGACY_IMPORT_ROOT: this.config.legacyImportRoot, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
         windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe'],
       })
@@ -130,6 +147,22 @@ export class AttendanceBridge {
       }))
       child.stdin.end(JSON.stringify(settings === undefined ? { version: 1, command } : { version: 1, command, settings }))
     })
+  }
+
+  private prepareRuntime(): Promise<RuntimeBootstrapResult> {
+    if (this.runtime === undefined) {
+      this.runtime = prepareRuntime({
+        pythonPath: this.config.pythonPath,
+        dataRoot: this.config.dataRoot,
+        requirementsPath: this.requirementsPath,
+        packageIndexUrl: this.config.pythonPackageIndex,
+      }).catch(error => {
+        this.runtime = undefined
+        if (error instanceof RuntimeBootstrapError) throw new BridgeError('RUNTIME_PREPARATION_FAILED', error.message)
+        throw new BridgeError('RUNTIME_PREPARATION_FAILED', 'iEPMS 运行环境准备失败。')
+      })
+    }
+    return this.runtime
   }
 }
 

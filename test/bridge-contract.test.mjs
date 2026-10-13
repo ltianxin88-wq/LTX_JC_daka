@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
 const bridge = fileURLToPath(new URL('../backend/iepms_bridge.py', import.meta.url))
+const runtime = fileURLToPath(new URL('../backend/runtime', import.meta.url))
 const backendRoot = 'D:/dingding/daka'
 
 async function invoke(request, root = backendRoot, environment = {}) {
@@ -145,6 +146,24 @@ test('configuration update writes only non-secret settings and returns a sanitiz
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('a fresh plugin directory initializes the packaged credentials without exposing plaintext', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'iepms-default-credentials-'))
+  try {
+    const value = await invoke({ version: 1, command: 'configuration-read' }, root)
+    assert.equal(value.ok, true)
+    assert.equal(value.data.accountConfigured, true)
+    assert.equal(value.data.passwordConfigured, true)
+    assert.match(value.data.accountMasked, /^CL\*{4}00$/)
+    const config = JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))
+    assert.equal('password' in config, false)
+    const rows = await readDatabase(join(root, 'iepms-attendance-plugin.db'), 'SELECT password FROM plugin_credentials')
+    assert.equal(rows.length, 1)
+    assert.match(rows[0].password, /^dpapi:v1:/)
+    const bundledDefaults = await readFile(new URL('../backend/runtime/default_credentials.py', import.meta.url), 'utf8')
+    assert.doesNotMatch(bundledDefaults, /CL50121500|XAjc@#%134/)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 test('personal attendance uses its independent account and returns only a sanitized record', async () => {
   const root = await mkdtemp(join(tmpdir(), 'iepms-personal-'))
   try {
@@ -164,17 +183,60 @@ test('personal attendance uses its independent account and returns only a saniti
         { '姓名': 'Other Person', '项目名称': 'Other Project', '打卡账号': 'other.user', '下班状态': '已打卡', '最早打卡': '07:30:00', '最晚打卡': '19:00:00', '核算工时(h)': '11.5', '工时质检': '正常' },
       ],
     }), 'utf8')
-    const value = await invoke({ version: 1, command: 'personal-attendance' }, root)
+    const value = await invoke({ version: 1, command: 'personal-attendance' }, root, { IEPMS_BRIDGE_TEST_NOW: '2026-10-13T12:00:00' })
     assert.equal(value.ok, true)
     assert.equal(value.data.configured, true)
     assert.equal(value.data.accountMasked, 'te****er')
     assert.deepEqual(value.data.records, [{ date: '2026-10-13', clockIn: '08:52', clockOut: '18:03', workMinutes: 552, status: 'normal' }])
+    assert.equal(value.data.calendar.workdays.includes('2026-10-13'), true)
+    assert.equal(value.data.calendar.workdays.includes('2026-10-01'), false)
     const serialized = JSON.stringify(value)
     for (const secret of ['Target Person', 'Other Person', 'Private Project', 'Other Project', 'test.user', 'other.user']) assert.equal(serialized.includes(secret), false)
     const history = await readDatabase(join(root, 'iepms-attendance-plugin.db'), 'SELECT account_hash, attendance_date FROM personal_history')
     assert.equal(history.length, 1)
     assert.equal(JSON.stringify(history).includes('test.user'), false)
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('late-night completion is normal from 23:30 through 23:59, but not before', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'iepms-late-night-'))
+  try {
+    await writeFile(join(root, 'config.json'), JSON.stringify({ personal_account: 'employee.001' }), 'utf8')
+    await writeFile(join(root, 'keyring_utils.py'), 'def mask_account(username): return "masked"\n', 'utf8')
+    const writeLatest = (clockOut) => writeFile(join(root, 'last_attendance_data.json'), JSON.stringify({
+      date: '2026-10-13', morning: [],
+      evening: [{ '打卡账号': 'employee.001', '下班状态': '已打卡', '最早打卡': '18:00:00', '最晚打卡': `${clockOut}:00`, '核算工时(h)': '5.5', '工时质检': '工时不足' }],
+    }), 'utf8')
+    await writeLatest('23:30')
+    const normal = await invoke({ version: 1, command: 'personal-attendance' }, root)
+    assert.equal(normal.data.records[0].status, 'normal')
+    await runPython('import sqlite3, sys; connection = sqlite3.connect(sys.stdin.read()); connection.execute("UPDATE personal_history SET status = \'early\'"); connection.commit()', join(root, 'iepms-attendance-plugin.db'))
+    await rm(join(root, 'last_attendance_data.json'))
+    const correctedHistory = await invoke({ version: 1, command: 'personal-attendance' }, root)
+    assert.equal(correctedHistory.data.records[0].status, 'normal')
+    await writeLatest('23:29')
+    const early = await invoke({ version: 1, command: 'personal-attendance' }, root)
+    assert.equal(early.data.records[0].status, 'early')
+    await writeLatest('23:59')
+    const finalMinute = await invoke({ version: 1, command: 'personal-attendance' }, root)
+    assert.equal(finalMinute.data.records[0].status, 'normal')
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('late-night completion rule accepts only a same-day earlier clock-in', async () => {
+  const output = await runPython([
+    'import json, sys',
+    `sys.path.insert(0, ${JSON.stringify(runtime)})`,
+    'from datetime import datetime',
+    'from attendance_rules import has_late_night_completion, is_late_night_completion',
+    'print(json.dumps([',
+    '  is_late_night_completion("08:30", "23:30"),',
+    '  is_late_night_completion("08:30", "23:29"),',
+    '  has_late_night_completion([datetime(2026, 10, 13, 8, 30), datetime(2026, 10, 13, 23, 59)]),',
+    '  has_late_night_completion([datetime(2026, 10, 13, 23, 30), datetime(2026, 10, 14, 23, 30)]),',
+    ']))',
+  ].join('\n'))
+  assert.deepEqual(JSON.parse(output), [true, false, true, false])
 })
 
 test('personal account update stores only the independent account and returns a sanitized view', async () => {
@@ -250,7 +312,7 @@ test('personal run and schedule commands reject unscoped input before side effec
   }
 })
 
-test('configuration stores credentials in the plugin database without a Windows credential backend', async () => {
+test('configuration stores credentials as DPAPI-protected data', async () => {
   const root = await mkdtemp(join(tmpdir(), 'iepms-sqlite-credentials-'))
   try {
     await writeFile(join(root, 'config.json'), '{}\n', 'utf8')
@@ -263,8 +325,11 @@ test('configuration stores credentials in the plugin database without a Windows 
     assert.equal(JSON.stringify(saved).includes('not-a-real-secret'), false)
     const view = await invoke({ version: 1, command: 'configuration-read' }, root)
     assert.equal(view.data.passwordConfigured, true)
-    const rows = await readDatabase(join(root, 'iepms-attendance-plugin.db'), 'SELECT username, length(password) AS password_length FROM plugin_credentials')
-    assert.deepEqual(rows, [{ username: 'sqlite.user', password_length: 17 }])
+    const rows = await readDatabase(join(root, 'iepms-attendance-plugin.db'), 'SELECT username, password FROM plugin_credentials')
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0].username, 'sqlite.user')
+    assert.match(rows[0].password, /^dpapi:v1:/)
+    assert.equal(rows[0].password.includes('not-a-real-secret'), false)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
@@ -389,6 +454,9 @@ test('plugin client is restricted to the local dashboard API', async () => {
   const source = await readFile(new URL('../src/client.tsx', import.meta.url), 'utf8')
   const styles = await readFile(new URL('../src/client.css', import.meta.url), 'utf8')
   const contracts = await readFile(new URL('../src/contracts.ts', import.meta.url), 'utf8')
+  const bridge = await readFile(new URL('../src/bridge.ts', import.meta.url), 'utf8')
+  const bootstrap = await readFile(new URL('../src/runtime-bootstrap.ts', import.meta.url), 'utf8')
+  const pluginConfig = await readFile(new URL('../src/config.ts', import.meta.url), 'utf8')
   const bridgeSource = await readFile(new URL('../backend/iepms_bridge.py', import.meta.url), 'utf8')
   const personalRun = bridgeSource.slice(bridgeSource.indexOf('def run_personal_inspection'), bridgeSource.indexOf('\ndef redact_log_line'))
   assert.match(source, /API_PREFIX/)
@@ -406,8 +474,78 @@ test('plugin client is restricted to the local dashboard API', async () => {
   assert.match(bridgeSource, /RUNTIME_ROOT/)
   assert.match(contracts, /iepms-attendance-local\/v1/)
   assert.match(source, /结果只在插件内提醒/)
+  assert.match(source, /首次使用会自动下载并安装依赖/)
   assert.doesNotMatch(personalRun, /send_dingtalk|default_webhook|webhook_url/i)
   assert.match(source, /management-run/)
+  assert.match(bridge, /prepareRuntime/)
+  assert.match(bootstrap, /-m', 'venv/)
+  assert.match(bootstrap, /python-runtime/)
+  assert.match(bootstrap, /pypi\.org/)
+  assert.match(pluginConfig, /mirrors\.aliyun\.com/)
+  assert.match(pluginConfig, /pythonPackageIndex/)
+  assert.doesNotMatch(source, /pip install/)
   assert.match(bridgeSource, /def start_management_run/)
   assert.match(bridgeSource, /def management_log/)
+})
+
+test('bundled runtime has no legacy machine-bound activation gate', async () => {
+  const autoSignin = await readFile(new URL('../backend/runtime/iepms_auto_signin.py', import.meta.url), 'utf8')
+  const monitor = await readFile(new URL('../backend/runtime/iepms_attendance_monitor.py', import.meta.url), 'utf8')
+  const bridgeSource = await readFile(new URL('../backend/iepms_bridge.py', import.meta.url), 'utf8')
+  const licenseModule = new URL('../backend/runtime/license_manager.py', import.meta.url)
+
+  for (const source of [autoSignin, monitor, bridgeSource]) {
+    assert.doesNotMatch(source, /license_manager|require_activation|软件未激活/)
+  }
+  await assert.rejects(readFile(licenseModule, 'utf8'))
+})
+
+test('management analytics separates pending, completed, and expired missing cards without exposing accounts', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'iepms-analytics-'))
+  try {
+    await writeFile(join(root, 'config.json'), '{}', 'utf8')
+    await writeRoster(join(root, 'roster.xlsx'), [
+      ['Alpha', 'P-1', 'Alice', '上海', 'employee.001', '', '', ''],
+      ['Alpha', 'P-1', 'Bob', '上海', 'employee.002', '', '', ''],
+      ['Beta', 'P-2', 'Carol', '杭州', 'employee.003', '', '', ''],
+    ])
+    await writeFile(join(root, 'management_attendance_sync.json'), JSON.stringify({ capturedAt: '2026-10-15T12:00:00', records: [
+      { account: 'employee.001', date: '2026-10-10', clockIn: '', clockOut: '', workMinutes: null, status: 'missing' },
+      { account: 'employee.001', date: '2026-10-13', clockIn: '', clockOut: '', workMinutes: null, status: 'missing' },
+      { account: 'employee.001', date: '2026-10-14', clockIn: '08:30', clockOut: '18:00', workMinutes: 570, status: 'normal' },
+      { account: 'employee.002', date: '2026-10-10', clockIn: '08:30', clockOut: '18:00', workMinutes: 570, status: 'normal' },
+      { account: 'employee.002', date: '2026-10-13', clockIn: '08:30', clockOut: '18:00', workMinutes: 570, status: 'normal' },
+      { account: 'employee.002', date: '2026-10-14', clockIn: '08:30', clockOut: '18:00', workMinutes: 570, status: 'normal' },
+      { account: 'employee.003', date: '2026-10-10', clockIn: '', clockOut: '', workMinutes: null, status: 'missing' },
+      { account: 'employee.003', date: '2026-10-13', clockIn: '08:30', clockOut: '17:00', workMinutes: 510, status: 'normal' },
+      { account: 'employee.003', date: '2026-10-14', clockIn: '08:30', clockOut: '17:00', workMinutes: 510, status: 'normal' },
+    ] }), 'utf8')
+    const initial = await invoke({ version: 1, command: 'management-analytics-read', settings: { month: '2026-10', page: 1, pageSize: 20, sortBy: 'missing', sortDirection: 'desc' } }, root, { IEPMS_BRIDGE_TEST_NOW: '2026-10-15T12:00:00' })
+    assert.equal(initial.ok, true)
+    assert.equal(initial.data.coverage.coveredWorkdays, 3)
+    assert.equal(initial.data.metrics.missingCount, 3)
+    assert.equal(initial.data.metrics.pendingMakeupCount, 1)
+    assert.equal(JSON.stringify(initial).includes('employee.001'), false)
+    const alice = initial.data.rows.find(row => row.name === 'Alice')
+    const carol = initial.data.rows.find(row => row.name === 'Carol')
+    assert.equal(alice.pendingMakeupCount, 1)
+    assert.equal(alice.expiredMissingCount, 1)
+    assert.equal(carol.expiredMissingCount, 1)
+    await runPython([
+      'import hashlib, sqlite3, sys',
+      'path = sys.stdin.read()',
+      'connection = sqlite3.connect(path)',
+      'key = hashlib.sha256(b"employee.001").hexdigest()',
+      "connection.execute(\"INSERT INTO personal_makeup_requests (account_hash, attendance_date, request_kind, overtime_date, reason, status, created_at, updated_at) VALUES (?, '2026-10-10', 'makeup', '', '', 'approved', '2026-10-11', '2026-10-11')\", (key,))",
+      'connection.commit()',
+    ].join('\n'), join(root, 'iepms-attendance-plugin.db'))
+    const updated = await invoke({ version: 1, command: 'management-analytics-read', settings: { month: '2026-10', group: 'Alpha', page: 1, pageSize: 1, sortBy: 'name', sortDirection: 'asc' } }, root, { IEPMS_BRIDGE_TEST_NOW: '2026-10-15T12:00:00' })
+    assert.equal(updated.data.pagination.total, 2)
+    assert.equal(updated.data.rows[0].name, 'Alice')
+    assert.equal(updated.data.rows[0].madeUpCount, 1)
+    assert.equal(updated.data.rows[0].expiredMissingCount, 0)
+    const detail = await invoke({ version: 1, command: 'management-analytics-person-read', settings: { month: '2026-10', personKey: alice.personKey, page: 1, pageSize: 20, sortBy: 'missing', sortDirection: 'desc' } }, root, { IEPMS_BRIDGE_TEST_NOW: '2026-10-15T12:00:00' })
+    assert.equal(detail.data.person.name, 'Alice')
+    assert.equal(detail.data.records.find(row => row.date === '2026-10-10').resolution, 'made-up')
+  } finally { await rm(root, { recursive: true, force: true }) }
 })

@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """Plugin-local account and password storage.
 
-The desktop plugin intentionally does not depend on Windows Credential Manager,
-DPAPI, or a separately installed keyring package. Credentials are persisted in
-the plugin-owned SQLite database and are never returned by bridge responses or
-written to logs.
+The desktop plugin stores credentials in its own SQLite database. Password
+values are protected with Windows DPAPI and are never returned by bridge
+responses or written to logs.
 """
 
 from __future__ import annotations
 
+import base64
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +17,7 @@ from plugin_paths import data_root
 
 
 DATABASE_FILE = Path(data_root()) / "iepms-attendance-plugin.db"
+PROTECTED_PREFIX = "dpapi:v1:"
 
 
 def _connection() -> sqlite3.Connection:
@@ -42,13 +43,31 @@ def get_password(username: str) -> str | None:
         row = connection.execute(
             "SELECT password FROM plugin_credentials WHERE username = ?", (username,)
         ).fetchone()
-        return str(row[0]) if row is not None else None
+        stored = str(row[0]) if row is not None else ""
     finally:
         connection.close()
+    if not stored:
+        return None
+    if stored.startswith(PROTECTED_PREFIX):
+        try:
+            import win32crypt
+            encrypted = base64.b64decode(stored[len(PROTECTED_PREFIX):].encode("ascii"), validate=True)
+            return win32crypt.CryptUnprotectData(encrypted, None, None, None, 0)[1].decode("utf-8")
+        except Exception:
+            return None
+    # Migrate credentials written by earlier plugin releases on their first use.
+    set_password(username, stored)
+    return stored
 
 
 def set_password(username: str, password: str) -> bool:
     if not username or not password:
+        return False
+    try:
+        import win32crypt
+        encrypted = win32crypt.CryptProtectData(password.encode("utf-8"), "iEPMS attendance plugin", None, None, None, 0)
+        stored = PROTECTED_PREFIX + base64.b64encode(encrypted).decode("ascii")
+    except Exception:
         return False
     connection = _connection()
     try:
@@ -57,7 +76,7 @@ def set_password(username: str, password: str) -> bool:
             VALUES (?, ?, ?)
             ON CONFLICT(username) DO UPDATE SET
                 password = excluded.password, updated_at = excluded.updated_at""",
-            (username, password, datetime.now().isoformat(timespec="seconds")),
+            (username, stored, datetime.now().isoformat(timespec="seconds")),
         )
         connection.commit()
         return True

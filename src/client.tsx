@@ -20,7 +20,7 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   API_PREFIX, CLIENT_HEADER, CLIENT_NAME, PLUGIN_ID,
-  type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type ManagementRunView,
+  type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type ManagementAnalyticsPersonView, type ManagementAnalyticsRow, type ManagementAnalyticsView, type ManagementRunView,
   type PersonalAttendanceRecord, type PersonalAttendanceStatus, type PersonalAttendanceView, type PersonalAutomationView, type PersonalMakeupView, type PersonalRosterView,
   type RosterRow, type RosterTableView,
 } from './contracts.js'
@@ -173,7 +173,7 @@ function AttendancePanel({ workspace }: { workspace?: WorkspaceController }) {
       </div>
     </header>
     <div className="iepms-attendance-scroll" tabIndex={0} aria-label="考勤监控内容">
-      {view === 'management' && state === 'loading' && <PanelState title="正在读取插件状态" text="不会登录 iEPMS，也不会发送通知。" />}
+      {view === 'management' && state === 'loading' && <PanelState title="正在准备插件运行环境" text="首次使用会自动下载并安装依赖，可能需要几分钟。此过程不会登录 iEPMS，也不会发送通知。" />}
       {view === 'management' && state === 'error' && <PanelState title="暂时无法读取考勤状态" text={error} retry={() => { void load() }} />}
       {view === 'management' && state === 'ready' && snapshot !== undefined && configuration !== undefined && <Dashboard
         snapshot={snapshot}
@@ -194,8 +194,10 @@ function AttendancePanel({ workspace }: { workspace?: WorkspaceController }) {
 }
 
 function Dashboard({ snapshot, configuration, onConfigurationSaved }: { snapshot: DashboardSnapshot; configuration: ConfigurationView; onConfigurationSaved: (value: ConfigurationView) => void }) {
+  const [section, setSection] = useState<'overview' | 'analytics'>('overview')
   const statusConfig = snapshot.status.configuration
   const data = snapshot.status.data
+  if (section === 'analytics') return <ManagementAnalytics onBack={() => { setSection('overview') }} />
   return <div className="iepms-attendance-content">
     <div className="iepms-attendance-mode" role="status"><IconDataOutline16 size={15} /><span>安全模式</span><p>仅在你点击保存时更新本地配置；不会自动登录、巡检、导出或发送钉钉消息。</p></div>
     <section className="iepms-attendance-summary" aria-label="运行概览">
@@ -204,7 +206,7 @@ function Dashboard({ snapshot, configuration, onConfigurationSaved }: { snapshot
       <Metric label="计划任务" value={`${snapshot.schedule.tasks.length} 项`} detail={snapshot.schedule.message ?? '已读取本地 Windows 计划任务'} good={snapshot.schedule.supported} />
       <Metric label="配置状态" value={statusConfig.valid ? '已读取' : '需检查'} detail={`${statusConfig.accountConfigured ? '账号已配置' : '账号未配置'} · ${statusConfig.browserConfigured ? '浏览器已配置' : '浏览器未配置'}`} good={statusConfig.valid && statusConfig.accountConfigured} />
     </section>
-    <ManagementOperations />
+    <ManagementOperations onAnalytics={() => { setSection('analytics') }} />
     <div className="iepms-attendance-columns">
       <section className="iepms-attendance-section"><header><IconClockOutline16 size={16} /><h2>近期状态</h2></header>
         {snapshot.recentRuns.length === 0 ? <Empty text="尚无可展示的本地运行摘要。" /> : <ol className="iepms-attendance-events">{snapshot.recentRuns.map((item, index) => <li key={`${item.timestamp}-${index}`} className={`is-${item.level}`}><time>{item.timestamp}</time><span>{item.summary}</span></li>)}</ol>}
@@ -225,7 +227,7 @@ function Dashboard({ snapshot, configuration, onConfigurationSaved }: { snapshot
   </div>
 }
 
-function ManagementOperations() {
+function ManagementOperations({ onAnalytics }: { onAnalytics: () => void }) {
   const [run, setRun] = useState<ManagementRunView>()
   const [logs, setLogs] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
@@ -265,11 +267,104 @@ function ManagementOperations() {
   }
   const running = run?.state === 'running'
   return <section className="iepms-attendance-section iepms-management-operations" aria-label="管理巡检">
-    <header><IconGaugeOutline16 size={16} /><h2>管理巡检</h2><span className={`iepms-management-state is-${run?.state ?? 'idle'}`}>{running ? '执行中' : run?.state === 'success' ? '已完成' : run?.state === 'error' ? '执行失败' : '尚未执行'}</span><button type="button" disabled={loading || starting || running} onClick={() => { void start() }}>{starting || running ? '巡检中…' : '立即巡检'}</button></header>
+    <header><IconGaugeOutline16 size={16} /><h2>管理巡检</h2><span className={`iepms-management-state is-${run?.state ?? 'idle'}`}>{running ? '执行中' : run?.state === 'success' ? '已完成' : run?.state === 'error' ? '执行失败' : '尚未执行'}</span><button type="button" className="iepms-management-analytics-entry" onClick={onAnalytics}>考勤运营分析</button><button type="button" disabled={loading || starting || running} onClick={() => { void start() }}>{starting || running ? '巡检中…' : '立即巡检'}</button></header>
     {run?.message && <p className={`iepms-management-message is-${run.state === 'error' ? 'error' : 'status'}`} role={run.state === 'error' ? 'alert' : 'status'}>{run.message}</p>}
     {error && <p className="iepms-management-message is-error" role="alert">{error}</p>}
     <div className="iepms-management-log"><div><strong>运行日志</strong><button type="button" onClick={() => { void refresh() }} disabled={loading}>刷新日志</button></div><pre>{logs.length > 0 ? logs.join('\n') : '暂无运行日志。'}</pre></div>
   </section>
+}
+
+function ManagementAnalytics({ onBack }: { onBack: () => void }) {
+  const [month, setMonth] = useState(monthKey(new Date()))
+  const [name, setName] = useState('')
+  const [group, setGroup] = useState('')
+  const [sortBy, setSortBy] = useState('missing')
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
+  const [page, setPage] = useState(1)
+  const [value, setValue] = useState<ManagementAnalyticsView>()
+  const [detail, setDetail] = useState<ManagementAnalyticsPersonView>()
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const load = useCallback(async (): Promise<void> => {
+    setLoading(true)
+    setError('')
+    try {
+      const next = await requestApi<ManagementAnalyticsView>(analyticsPath('management-analytics', { month, name, group, page, pageSize: 20, sortBy, sortDirection }))
+      if (!isManagementAnalytics(next)) throw new Error('考勤运营分析服务返回了无效数据。')
+      setValue(next)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法读取考勤运营分析。')
+    } finally { setLoading(false) }
+  }, [group, month, name, page, sortBy, sortDirection])
+  useEffect(() => { void load() }, [load])
+  const updateFilter = (action: () => void): void => { setPage(1); action() }
+  const openPerson = async (row: ManagementAnalyticsRow): Promise<void> => {
+    try {
+      const next = await requestApi<ManagementAnalyticsPersonView>(analyticsPath('management-analytics-person', { month, personKey: row.personKey }))
+      if (!isManagementAnalyticsPerson(next)) throw new Error('人员考勤详情返回无效。')
+      setDetail(next)
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '无法读取人员考勤详情。') }
+  }
+  const exportRows = async (): Promise<void> => {
+    try {
+      const rows: ManagementAnalyticsRow[] = []
+      let exportPage = 1
+      let total = 0
+      do {
+        const next = await requestApi<ManagementAnalyticsView>(analyticsPath('management-analytics', { month, name, group, page: exportPage, pageSize: 100, sortBy, sortDirection }))
+        if (!isManagementAnalytics(next)) throw new Error('导出数据返回无效。')
+        rows.push(...next.rows)
+        total = next.pagination.total
+        exportPage += 1
+      } while (rows.length < total)
+      downloadAnalyticsCsv(month, rows)
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '导出考勤明细失败。') }
+  }
+  const totalPages = value === undefined ? 1 : Math.max(1, Math.ceil(value.pagination.total / value.pagination.pageSize))
+  return <div className="iepms-attendance-content iepms-analytics" aria-label="考勤运营分析">
+    <header className="iepms-analytics-title"><button type="button" onClick={onBack}><IconChevronLeftOutline16 size={16} />返回管理概览</button><div><h2>考勤运营分析</h2><p>按管理巡检已同步的工作日统计，未同步日期不计为缺卡。</p></div><button type="button" className="iepms-analytics-export" onClick={() => { void exportRows() }} disabled={loading || value === undefined}>导出 Excel</button></header>
+    <section className="iepms-analytics-filters" aria-label="分析筛选">
+      <label>月份<input type="month" value={month} onChange={event => updateFilter(() => { setMonth(event.target.value || monthKey(new Date())) })} /></label>
+      <label>姓名搜索<input value={name} placeholder="输入姓名" onChange={event => updateFilter(() => { setName(event.target.value) })} /></label>
+      <label>项目/地市分组<select value={group} onChange={event => updateFilter(() => { setGroup(event.target.value) })}><option value="">全部分组</option>{value?.groups.map(item => <option key={item} value={item}>{item}</option>)}</select></label>
+      <button type="button" onClick={() => { void load() }} disabled={loading}>刷新数据</button>
+    </section>
+    {error && <p className="iepms-analytics-error" role="alert">{error}</p>}
+    {loading && value === undefined && <div className="iepms-analytics-skeleton" />}
+    {value !== undefined && <>
+      <p className="iepms-analytics-coverage">数据覆盖：{value.coverage.coveredWorkdays} 个已同步工作日{value.coverage.firstDate ? `（${value.coverage.firstDate} 至 ${value.coverage.lastDate}）` : '。请先运行管理巡检以同步数据。'}</p>
+      <section className="iepms-analytics-metrics" aria-label="核心数据">
+        <AnalyticsMetric label="考勤总人数" value={`${value.metrics.personCount}`} detail="花名册有效人员" tone="blue" />
+        <AnalyticsMetric label="整体出勤率" value={`${value.metrics.attendanceRate}%`} detail="仅基于已覆盖工作日" tone="green" />
+        <AnalyticsMetric label="本月缺卡次数" value={`${value.metrics.missingCount}`} detail="原始缺卡记录" tone="red" />
+        <AnalyticsMetric label="待补卡次数" value={`${value.metrics.pendingMakeupCount}`} detail="72 小时内或待处理申请" tone="orange" />
+      </section>
+      <section className="iepms-analytics-charts" aria-label="考勤图表">
+        <article><header><h3>每日缺卡趋势</h3><span>待处理缺卡</span></header><AnalyticsTrend value={value} /></article>
+        <article><header><h3>人员缺卡排行榜</h3><span>按缺卡次数</span></header><AnalyticsRanking value={value} /></article>
+        <article><header><h3>考勤等级分布</h3><span>已覆盖人员</span></header><AnalyticsGradeDistribution value={value} /></article>
+      </section>
+      <section className="iepms-analytics-table-section"><header><div><h3>人员考勤明细</h3><span>{value.pagination.total} 人</span></div><label>排序<select value={sortBy} onChange={event => updateFilter(() => { setSortBy(event.target.value) })}><option value="missing">缺卡次数</option><option value="rate">出勤率</option><option value="pending">待补卡</option><option value="expired">超时未补卡</option><option value="name">姓名</option></select></label><button type="button" title="切换排序方向" onClick={() => updateFilter(() => { setSortDirection(current => current === 'desc' ? 'asc' : 'desc') })}>{sortDirection === 'desc' ? '降序' : '升序'}</button></header>
+        <div className="iepms-analytics-table-wrap"><table><thead><tr><th>姓名</th><th>分组</th><th>应出勤</th><th>实际出勤</th><th>正常</th><th>缺卡</th><th>已补卡</th><th>待补卡</th><th>超时未补</th><th>迟到</th><th>早退</th><th>出勤率</th><th>等级</th></tr></thead><tbody>{value.rows.length === 0 ? <tr><td colSpan={13} className="iepms-analytics-empty-cell">当前筛选条件下暂无已同步的人员数据。</td></tr> : value.rows.map(row => <tr key={row.personKey}><td><button type="button" className="iepms-analytics-person" onClick={() => { void openPerson(row) }}>{row.name}</button></td><td>{row.group || row.city || '-'}</td><td>{row.expectedDays}</td><td>{row.actualDays}</td><td className="is-normal">{row.normalCount}</td><td className="is-danger">{row.missingCount}</td><td className="is-normal">{row.madeUpCount}</td><td className="is-warning">{row.pendingMakeupCount}</td><td className="is-danger">{row.expiredMissingCount}</td><td className="is-warning">{row.lateCount}</td><td className="is-warning">{row.earlyCount}</td><td>{row.expectedDays ? `${row.attendanceRate}%` : '-'}</td><td><span className={`iepms-analytics-grade is-${gradeTone(row.grade)}`}>{row.grade}</span></td></tr>)}</tbody></table></div>
+        <footer><button type="button" disabled={page <= 1 || loading} onClick={() => { setPage(current => current - 1) }}><IconChevronLeftOutline16 size={14} /></button><span>第 {page} / {totalPages} 页</span><button type="button" disabled={page >= totalPages || loading} onClick={() => { setPage(current => current + 1) }}><IconChevronRightOutline16 size={14} /></button></footer>
+      </section>
+    </>}
+    {detail !== undefined && <AnalyticsPersonDetail value={detail} onClose={() => { setDetail(undefined) }} />}
+  </div>
+}
+
+function AnalyticsMetric({ label, value, detail, tone }: { label: string; value: string; detail: string; tone: 'blue' | 'green' | 'orange' | 'red' }) { return <article className={`iepms-analytics-metric is-${tone}`}><p>{label}</p><strong>{value}</strong><span>{detail}</span></article> }
+function AnalyticsTrend({ value }: { value: ManagementAnalyticsView }) {
+  const points = value.trend
+  const max = Math.max(1, ...points.map(item => item.missingCount))
+  const path = points.map((item, index) => `${index === 0 ? 'M' : 'L'} ${points.length <= 1 ? 20 : 12 + index * 276 / (points.length - 1)} ${96 - item.missingCount * 76 / max}`).join(' ')
+  return points.length === 0 ? <p className="iepms-chart-empty">暂无已同步工作日数据</p> : <div className="iepms-trend"><svg viewBox="0 0 300 112" role="img" aria-label="每日缺卡趋势"><path className="iepms-trend-grid" d="M 12 20 H 288 M 12 58 H 288 M 12 96 H 288" /><path className="iepms-trend-line" d={path} />{points.map((item, index) => <circle key={item.date} cx={points.length <= 1 ? 20 : 12 + index * 276 / (points.length - 1)} cy={96 - item.missingCount * 76 / max} r="3" />)}</svg><div>{points.filter((_, index) => index === 0 || index === points.length - 1 || index % Math.ceil(points.length / 4) === 0).map(item => <span key={item.date}>{item.date.slice(5)}</span>)}</div></div>
+}
+function AnalyticsRanking({ value }: { value: ManagementAnalyticsView }) { const max = Math.max(1, ...value.ranking.map(item => item.missingCount)); return value.ranking.length === 0 ? <p className="iepms-chart-empty">暂无缺卡排行</p> : <ol className="iepms-ranking">{value.ranking.map(item => <li key={`${item.name}-${item.group}`}><span title={item.group}>{item.name}</span><div><i style={{ width: `${item.missingCount * 100 / max}%` }} /></div><strong>{item.missingCount}</strong></li>)}</ol> }
+function AnalyticsGradeDistribution({ value }: { value: ManagementAnalyticsView }) { const total = Math.max(1, value.gradeDistribution.reduce((sum, item) => sum + item.count, 0)); return <div className="iepms-grade-distribution">{value.gradeDistribution.map(item => <div key={item.grade}><span>{item.grade}</span><div><i className={`is-${gradeTone(item.grade)}`} style={{ width: `${item.count * 100 / total}%` }} /></div><strong>{item.count} 人</strong></div>)}</div> }
+function AnalyticsPersonDetail({ value, onClose }: { value: ManagementAnalyticsPersonView; onClose: () => void }) {
+  const byDate = new Map(value.records.map(record => [record.date, record]))
+  return <aside className="iepms-analytics-detail" aria-label="人员月度考勤详情"><header><div><h3>{value.person.name} 的月度考勤</h3><p>{value.month} · {value.person.group || value.person.city || '未分组'}</p></div><button type="button" onClick={onClose} aria-label="关闭人员详情">关闭</button></header><div className="iepms-detail-calendar"><div className="iepms-detail-week"><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div><div className="iepms-detail-days">{calendarCells(value.month).map((cell, index) => cell === undefined ? <span key={`empty-${index}`} /> : <div key={cell.date} className={`is-${byDate.get(cell.date)?.status ?? 'unknown'}`}><strong>{cell.day}</strong><small>{detailStatusLabel(byDate.get(cell.date))}</small></div>)}</div></div><section><h4>异常记录</h4>{value.anomalies.length === 0 ? <p>本月已同步记录中没有异常。</p> : <ul>{value.anomalies.map(item => <li key={item.date}><time>{item.date}</time><span>{detailStatusLabel(item)}{item.resolution === undefined ? '' : ` · ${item.resolution === 'made-up' ? '已补卡' : item.resolution === 'pending' ? '待补卡' : '超时未补卡'}`}</span><small>{item.clockIn || '-'} / {item.clockOut || '-'}</small></li>)}</ul>}</section></aside>
 }
 
 function PersonalDashboard({ value, automation, makeup, onAccountSaved, onAutomationChanged }: { value: PersonalAttendanceView; automation: PersonalAutomationView; makeup: PersonalMakeupView; onAccountSaved: (value: PersonalAttendanceView) => void; onAutomationChanged: (value: PersonalAutomationView) => void }) {
@@ -278,13 +373,17 @@ function PersonalDashboard({ value, automation, makeup, onAccountSaved, onAutoma
   const [selectedMonth, setSelectedMonth] = useState(currentMonth)
   const records = value.records.filter(record => record.date.startsWith(`${selectedMonth}-`))
   const recordByDate = new Map(records.map(record => [record.date, record]))
-  const todayRecord = value.records.find(record => record.date === dateKey(today))
-  const attendanceDays = records.filter(record => record.status !== 'missing' && record.status !== 'pending').length
-  const normalPunches = records.filter(record => record.status === 'normal' || record.status === 'checked-in').reduce((total, record) => total + Number(Boolean(record.clockIn)) + Number(Boolean(record.clockOut)), 0)
-  const late = records.filter(record => record.status === 'late').length
-  const early = records.filter(record => record.status === 'early').length
-  const missing = records.filter(record => record.status === 'missing').length
-  const expectedDays = expectedWorkdays(selectedMonth, currentMonth)
+  const workdayDates = new Set(value.calendar.workdays)
+  const isWorkday = (date: string): boolean => workdayDates.has(date)
+  const todayDate = dateKey(today)
+  const todayRecord = isWorkday(todayDate) ? value.records.find(record => record.date === todayDate) : undefined
+  const workingRecords = records.filter(record => isWorkday(record.date))
+  const attendanceDays = workingRecords.filter(record => record.status !== 'missing' && record.status !== 'pending').length
+  const normalPunches = workingRecords.filter(record => record.status === 'normal' || record.status === 'checked-in').reduce((total, record) => total + Number(Boolean(record.clockIn)) + Number(Boolean(record.clockOut)), 0)
+  const late = workingRecords.filter(record => record.status === 'late').length
+  const early = workingRecords.filter(record => record.status === 'early').length
+  const missing = workingRecords.filter(record => record.status === 'missing').length
+  const expectedDays = expectedWorkdays(selectedMonth, currentMonth, workdayDates)
   const attendanceRate = expectedDays === 0 ? 0 : Math.min(100, Math.round(attendanceDays / expectedDays * 100))
   const anomalyCount = late + early + missing
   const recent = [...value.records].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8)
@@ -294,7 +393,7 @@ function PersonalDashboard({ value, automation, makeup, onAccountSaved, onAutoma
     <PersonalAutomationPanel value={automation} onChanged={onAutomationChanged} />
     {value.configured && !value.source.latestAvailable && <div className="iepms-personal-notice"><IconDataOutline16 size={15} /><span>暂无该账号的考勤数据。完成一次巡检后，个人版会从本地结果中整理记录。</span></div>}
     <section className="iepms-personal-metrics" aria-label="个人考勤概览">
-      <PersonalMetric icon={<IconAlarmClockOutline16 size={17} />} label="今日状态" value={todayRecord === undefined ? '暂无记录' : personalStatusLabel(todayRecord.status)} detail={todayRecord === undefined ? '等待本地巡检数据' : `上班 ${todayRecord.clockIn || '-'} / 下班 ${todayRecord.clockOut || '-'}`} tone={statusTone(todayRecord?.status)} />
+      <PersonalMetric icon={<IconAlarmClockOutline16 size={17} />} label="今日状态" value={!isWorkday(todayDate) ? '休' : todayRecord === undefined ? '暂无记录' : personalStatusLabel(todayRecord.status)} detail={!isWorkday(todayDate) ? '非工作日不计入考勤统计' : todayRecord === undefined ? '等待本地巡检数据' : `上班 ${todayRecord.clockIn || '-'} / 下班 ${todayRecord.clockOut || '-'}`} tone={!isWorkday(todayDate) ? 'muted' : statusTone(todayRecord?.status)} />
       <PersonalMetric icon={<IconGaugeOutline16 size={17} />} label="本月出勤" value={`${attendanceDays}天`} detail={`工作日估算 ${expectedDays} 天`} tone="blue" />
       <PersonalMetric icon={<IconCheckCircleOutline16 size={17} />} label="正常打卡" value={`${normalPunches}次`} detail={`出勤率 ${attendanceRate}%`} tone="green" />
       <PersonalMetric icon={<IconWarningTriangleOutline16 size={17} />} label="异常记录" value={`${anomalyCount}次`} detail={`迟到 ${late} 次 · 早退 ${early} 次 · 缺卡 ${missing} 次`} tone={anomalyCount > 0 ? 'orange' : 'muted'} />
@@ -302,15 +401,18 @@ function PersonalDashboard({ value, automation, makeup, onAccountSaved, onAutoma
     <div className="iepms-personal-grid">
       <section className="iepms-personal-card iepms-personal-calendar"><header><span><IconAlarmClockOutline16 size={16} /><h2>月度打卡日历</h2></span><div><button type="button" aria-label="上个月" onClick={() => { setSelectedMonth(shiftMonth(selectedMonth, -1)) }}><IconChevronLeftOutline16 size={15} /></button><strong>{selectedMonth.replace('-', '年')}月</strong><button type="button" aria-label="下个月" disabled={selectedMonth >= currentMonth} onClick={() => { setSelectedMonth(shiftMonth(selectedMonth, 1)) }}><IconChevronRightOutline16 size={15} /></button></div></header>
         <div className="iepms-calendar-weekdays" aria-hidden="true">{['日', '一', '二', '三', '四', '五', '六'].map(day => <span key={day}>{day}</span>)}</div>
-        <div className="iepms-calendar-days">{calendarCells(selectedMonth).map(cell => {
+        <div className="iepms-calendar-days">{calendarCells(selectedMonth).map((cell, index) => {
+          if (cell === undefined) return <div key={`empty-${index}`} className="iepms-calendar-day is-empty" aria-hidden="true" />
           const record = recordByDate.get(cell.date)
-          const isToday = cell.date === dateKey(today)
+          const workday = isWorkday(cell.date)
+          const isToday = cell.date === todayDate
           const reminder = record?.status === 'missing' ? undefined : makeupReminderForDate(cell.date, makeup)
-          const className = `iepms-calendar-day${cell.inMonth ? '' : ' is-outside'}${isToday ? ' is-today' : ''}${reminder === undefined ? '' : ` is-${reminder}-reminder`}`
-          const label = record?.status === 'missing' ? '缺卡' : reminder === 'makeup' ? '可补卡' : reminder === 'overtime' ? '可加班补卡' : undefined
-          return <div key={cell.date} className={className} title={label === undefined ? record === undefined ? cell.date : `${cell.date} ${personalStatusLabel(record.status)}` : `${cell.date} ${label}`}><span>{cell.day}</span>{record !== undefined && <i className={`is-${record.status}`} aria-label={personalStatusLabel(record.status)} />}{label !== undefined && <b>{label}</b>}</div>
+          const className = `iepms-calendar-day${workday ? '' : ' is-rest'}${isToday ? ' is-today' : ''}${reminder === undefined ? '' : ` is-${reminder}-reminder`}`
+          const label = record?.status === 'missing' && workday ? '缺卡' : reminder === 'makeup' ? '可补卡' : reminder === 'overtime' ? '可加班补卡' : workday ? undefined : '休'
+          const restStyle = !workday && reminder === undefined ? { background: 'rgba(127,139,152,.045)' } : undefined
+          return <div key={cell.date} className={className} style={restStyle} title={label === undefined ? record === undefined ? cell.date : `${cell.date} ${personalStatusLabel(record.status)}` : `${cell.date} ${label}`}><span>{cell.day}</span>{record !== undefined && workday && <i className={`is-${record.status}`} aria-label={personalStatusLabel(record.status)} />}{label !== undefined && <b style={!workday ? { color: '#7b8491' } : undefined}>{label}</b>}</div>
         })}</div>
-        <div className="iepms-calendar-legend"><span><i className="is-normal" />正常</span><span><i className="is-late" />迟到/早退</span><span><i className="is-missing" />缺卡</span><span><i className="is-pending" />进行中</span></div>
+        <div className="iepms-calendar-legend"><span><i className="is-normal" />正常</span><span><i className="is-late" />迟到/早退</span><span><i className="is-missing" />缺卡</span><span><i className="is-pending" />进行中</span><span><i className="is-rest" />休</span></div>
         <div className="iepms-calendar-makeup-legend" aria-label="补卡提醒图例"><strong>补卡提醒：</strong><span><i className="is-makeup" />可补卡</span><span><i className="is-overtime" />可加班补卡</span><small>缺卡后 72 小时内可补卡；超过 72 小时显示加班补卡提醒。</small></div>
       </section>
       <section className="iepms-personal-card iepms-personal-stats"><header><IconGaugeOutline16 size={16} /><h2>月度考勤统计</h2></header>
@@ -644,11 +746,21 @@ function PanelState({ title, text, retry }: { title: string; text: string; retry
 function taskStateLabel(value: string): string { return value === 'ready' ? '就绪' : value === 'running' ? '运行中' : value === 'disabled' ? '已停用' : '未知' }
 function isSnapshot(value: unknown): value is DashboardSnapshot { return value !== null && typeof value === 'object' && 'status' in value && 'roster' in value && 'schedule' in value && 'recentRuns' in value }
 function isManagementRun(value: unknown): value is ManagementRunView { return value !== null && typeof value === 'object' && ['idle', 'running', 'success', 'error'].includes(String((value as { state?: unknown }).state)) && typeof (value as { message?: unknown }).message === 'string' }
+function isManagementAnalytics(value: unknown): value is ManagementAnalyticsView {
+  if (value === null || typeof value !== 'object') return false
+  const item = value as Partial<ManagementAnalyticsView>
+  return typeof item.month === 'string' && Array.isArray(item.rows) && Array.isArray(item.trend) && Array.isArray(item.ranking) && Array.isArray(item.gradeDistribution) && item.metrics !== undefined && item.pagination !== undefined
+}
+function isManagementAnalyticsPerson(value: unknown): value is ManagementAnalyticsPersonView {
+  if (value === null || typeof value !== 'object') return false
+  const item = value as Partial<ManagementAnalyticsPersonView>
+  return typeof item.month === 'string' && item.person !== undefined && Array.isArray(item.records) && Array.isArray(item.anomalies)
+}
 function isConfiguration(value: unknown): value is ConfigurationView { return value !== null && typeof value === 'object' && 'accountConfigured' in value && 'passwordConfigured' in value && 'browserChannel' in value }
 function isPersonalAttendance(value: unknown): value is PersonalAttendanceView {
   if (value === null || typeof value !== 'object' || !('configured' in value) || !('records' in value)) return false
   const record = value as Partial<PersonalAttendanceView>
-  return typeof record.configured === 'boolean' && Array.isArray(record.records) && record.records.every(item => item !== null && typeof item === 'object' && typeof item.date === 'string' && typeof item.status === 'string')
+  return typeof record.configured === 'boolean' && Array.isArray(record.records) && record.records.every(item => item !== null && typeof item === 'object' && typeof item.date === 'string' && typeof item.status === 'string') && record.calendar !== undefined && Array.isArray(record.calendar.workdays) && record.calendar.workdays.every(date => typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/u.test(date))
 }
 function isPersonalAutomation(value: unknown): value is PersonalAutomationView {
   if (value === null || typeof value !== 'object' || !('state' in value) || !('schedule' in value)) return false
@@ -695,23 +807,23 @@ function shiftMonth(value: string, amount: number): string {
   const [year, month] = parseMonth(value)
   return monthKey(new Date(year, month - 1 + amount, 1))
 }
-function calendarCells(value: string): Array<{ date: string; day: number; inMonth: boolean }> {
+function calendarCells(value: string): Array<{ date: string; day: number } | undefined> {
   const [year, month] = parseMonth(value)
   const first = new Date(year, month - 1, 1)
-  const start = new Date(year, month - 1, 1 - first.getDay())
-  return Array.from({ length: 42 }, (_, index) => {
-    const date = new Date(start.getFullYear(), start.getMonth(), start.getDate() + index)
-    return { date: dateKey(date), day: date.getDate(), inMonth: date.getMonth() === month - 1 }
+  const monthDays = new Date(year, month, 0).getDate()
+  const slots = Math.ceil((first.getDay() + monthDays) / 7) * 7
+  return Array.from({ length: slots }, (_, index) => {
+    const day = index - first.getDay() + 1
+    return day >= 1 && day <= monthDays ? { date: dateKey(new Date(year, month - 1, day)), day } : undefined
   })
 }
-function expectedWorkdays(value: string, currentMonth: string): number {
+function expectedWorkdays(value: string, currentMonth: string, workdayDates: Set<string>): number {
   if (value > currentMonth) return 0
   const [year, month] = parseMonth(value)
   const finalDay = value === currentMonth ? new Date().getDate() : new Date(year, month, 0).getDate()
   let count = 0
   for (let day = 1; day <= finalDay; day += 1) {
-    const weekday = new Date(year, month - 1, day).getDay()
-    if (weekday !== 0 && weekday !== 6) count += 1
+    if (workdayDates.has(dateKey(new Date(year, month - 1, day)))) count += 1
   }
   return count
 }
@@ -720,6 +832,31 @@ function personalStatusLabel(value: PersonalAttendanceStatus): string {
 }
 function statusTone(value?: PersonalAttendanceStatus): 'blue' | 'green' | 'orange' | 'muted' { return value === 'normal' || value === 'checked-in' ? 'green' : value === 'late' || value === 'early' || value === 'missing' ? 'orange' : 'muted' }
 function formatWorkMinutes(value: number | null): string { return value === null ? '-' : `${Math.floor(value / 60)}h${String(value % 60).padStart(2, '0')}m` }
+function analyticsPath(path: string, values: Record<string, string | number | undefined>): string {
+  const search = new URLSearchParams()
+  for (const [key, value] of Object.entries(values)) if (value !== undefined && value !== '') search.set(key, String(value))
+  return `${path}?${search.toString()}`
+}
+function gradeTone(value: string): 'green' | 'blue' | 'orange' | 'red' | 'muted' { return value === '优秀' ? 'green' : value === '良好' ? 'blue' : value === '待关注' ? 'orange' : value === '异常较多' ? 'red' : 'muted' }
+function detailStatusLabel(value: { status: PersonalAttendanceStatus; resolution?: 'made-up' | 'pending' | 'expired' } | undefined): string {
+  if (value === undefined) return '未同步'
+  if (value.status === 'missing' && value.resolution === 'made-up') return '已补卡'
+  if (value.status === 'missing' && value.resolution === 'pending') return '待补卡'
+  if (value.status === 'missing' && value.resolution === 'expired') return '超时未补'
+  return personalStatusLabel(value.status)
+}
+function downloadAnalyticsCsv(month: string, rows: ManagementAnalyticsRow[]): void {
+  const headers = ['姓名', '分组', '地市', '应出勤天数', '实际出勤天数', '正常打卡次数', '缺卡次数', '已补卡次数', '待补卡次数', '超时未补卡次数', '迟到次数', '早退次数', '出勤率', '考勤等级']
+  const quote = (value: string | number): string => `"${String(value).replace(/"/gu, '""')}"`
+  const body = rows.map(row => [row.name, row.group, row.city, row.expectedDays, row.actualDays, row.normalCount, row.missingCount, row.madeUpCount, row.pendingMakeupCount, row.expiredMissingCount, row.lateCount, row.earlyCount, `${row.attendanceRate}%`, row.grade])
+  const lines = [headers, ...body].map(line => line.map(quote).join(','))
+  const url = URL.createObjectURL(new Blob([`\ufeff${lines.join('\r\n')}`], { type: 'text/csv;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `考勤运营分析-${month}.csv`
+  link.click()
+  window.setTimeout(() => { URL.revokeObjectURL(url) }, 0)
+}
 
 async function requestApi<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_PREFIX}/${path}`, {

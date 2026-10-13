@@ -424,18 +424,13 @@ def refresh_captcha(page):
 # =============================================================
 def run_login(headed=False):
     """
-    完整的自动登录流程（授权门置于此处，覆盖 main() 与命令行两条调用路径）：
+    完整的自动登录流程：
     1. 打开浏览器 → 进入登录页
     2. 填写账号密码 → 点击登录
     3. 拼图验证码破解（最多 5 次重试）
     4. 等待跳转至业务系统
     5. 保存 session_state.json
     """
-    import license_manager
-    if not license_manager.require_activation("自动登录"):
-        print("❌ 软件未激活，已终止。请先在主程序内完成授权激活。")
-        return False
-
     from playwright.sync_api import sync_playwright
 
     # 加载配置
