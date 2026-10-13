@@ -93,6 +93,37 @@ test('configuration update writes only non-secret settings and returns a sanitiz
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('personal attendance returns only the configured account sanitized record', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'iepms-personal-'))
+  try {
+    await writeFile(join(root, 'config.json'), JSON.stringify({ username: 'test.user' }), 'utf8')
+    await writeFile(join(root, 'keyring_utils.py'), [
+      'def get_password(username): return "stored"',
+      'def mask_account(username): return "te****er"',
+    ].join('\n'), 'utf8')
+    await writeFile(join(root, 'last_attendance_data.json'), JSON.stringify({
+      date: '2026-10-13',
+      morning: [
+        { '姓名': 'Target Person', '项目名称': 'Private Project', '打卡账号': 'test.user', '上班状态': '已打卡', '打卡时间': '2026-10-13 08:52:00' },
+        { '姓名': 'Other Person', '项目名称': 'Other Project', '打卡账号': 'other.user', '上班状态': '已打卡', '打卡时间': '2026-10-13 07:30:00' },
+      ],
+      evening: [
+        { '姓名': 'Target Person', '项目名称': 'Private Project', '打卡账号': 'test.user', '下班状态': '已打卡', '最早打卡': '08:52:00', '最晚打卡': '18:03:00', '核算工时(h)': '9.2', '工时质检': '正常' },
+        { '姓名': 'Other Person', '项目名称': 'Other Project', '打卡账号': 'other.user', '下班状态': '已打卡', '最早打卡': '07:30:00', '最晚打卡': '19:00:00', '核算工时(h)': '11.5', '工时质检': '正常' },
+      ],
+    }), 'utf8')
+    const value = await invoke({ version: 1, command: 'personal-attendance' }, root)
+    assert.equal(value.ok, true)
+    assert.equal(value.data.configured, true)
+    assert.equal(value.data.accountMasked, 'te****er')
+    assert.deepEqual(value.data.records, [{ date: '2026-10-13', clockIn: '08:52', clockOut: '18:03', workMinutes: 552, status: 'normal' }])
+    const serialized = JSON.stringify(value)
+    for (const secret of ['Target Person', 'Other Person', 'Private Project', 'Other Project', 'test.user', 'other.user']) assert.equal(serialized.includes(secret), false)
+    const history = await readFile(join(root, '.personal_attendance_history.json'), 'utf8')
+    assert.equal(history.includes('test.user'), false)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 test('plugin client is restricted to the local dashboard API', async () => {
   const source = await readFile(new URL('../src/client.tsx', import.meta.url), 'utf8')
   const contracts = await readFile(new URL('../src/contracts.ts', import.meta.url), 'utf8')

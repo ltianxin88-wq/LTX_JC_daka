@@ -1,7 +1,7 @@
 {
   "name": "iepms-attendance-plugin",
-  "version": "0.2.0",
-  "description": "Local iEPMS attendance monitor and secure configuration panel for DeepSeek Harness",
+  "version": "0.3.0",
+  "description": "iEPMS management and personal attendance dashboards for DeepSeek Harness",
   "license": "UNLICENSED",
   "type": "module",
   "main": "./lib/index.js",

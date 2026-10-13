@@ -171,6 +171,7 @@ All state-changing requests require an operation nonce issued by the plugin runt
 - [ ] Add roster validation and aggregate preview before accepting a roster replacement.
 - [x] Add configuration health checks for account presence, credential availability, webhook presence and browser/dependency readiness without returning their values.
 - [x] Add a guarded DSH settings form for account credentials, Webhook, browser channel and overnight policy while retaining backward compatibility with the legacy GUI.
+- [x] Add switchable management and personal dashboards with account-scoped local attendance history, monthly calendar, aggregate statistics and recent records.
 - [ ] Keep configuration file formats backward-compatible until a migration and rollback path is tested.
 
 ### Acceptance Criteria

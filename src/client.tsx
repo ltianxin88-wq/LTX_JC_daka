@@ -7,14 +7,21 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import {
   IconAlarmClockOutlineRegular as IconAlarmClockOutline16,
+  IconCheckCircleOutlineRegular as IconCheckCircleOutline16,
   IconChevronLeftOutlineRegular as IconChevronLeftOutline16,
+  IconChevronRightOutlineRegular as IconChevronRightOutline16,
+  IconChecklistOutlineRegular as IconChecklistOutline16,
   IconClockOutlineRegular as IconClockOutline16,
   IconDataOutlineRegular as IconDataOutline16,
+  IconGaugeOutlineRegular as IconGaugeOutline16,
   IconInspectOutlineRegular as IconInspectOutline16,
+  IconUserOutlineRegular as IconUserOutline16,
+  IconWarningTriangleOutlineRegular as IconWarningTriangleOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   API_PREFIX, CLIENT_HEADER, CLIENT_NAME, PLUGIN_ID,
   type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot,
+  type PersonalAttendanceRecord, type PersonalAttendanceStatus, type PersonalAttendanceView,
 } from './contracts.js'
 import { activatePluginWorkspace, observePluginWorkspace } from './workspace-ownership.js'
 import cssText from './client.css'
@@ -97,10 +104,14 @@ function AttendanceWorkspace({ workspace }: ConversationSlotProps & { workspace:
 }
 
 function AttendancePanel({ workspace }: { workspace?: WorkspaceController }) {
+  const [view, setView] = useState<'management' | 'personal'>('management')
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [snapshot, setSnapshot] = useState<DashboardSnapshot>()
   const [configuration, setConfiguration] = useState<ConfigurationView>()
   const [error, setError] = useState('')
+  const [personalState, setPersonalState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const [personal, setPersonal] = useState<PersonalAttendanceView>()
+  const [personalError, setPersonalError] = useState('')
   const load = useCallback(async (background = false): Promise<void> => {
     if (!background) setState('loading')
     setError('')
@@ -118,22 +129,45 @@ function AttendancePanel({ workspace }: { workspace?: WorkspaceController }) {
     }
   }, [])
   useEffect(() => { void load() }, [load])
+  const loadPersonal = useCallback(async (): Promise<void> => {
+    setPersonalState('loading')
+    setPersonalError('')
+    try {
+      const next = await requestApi<PersonalAttendanceView>('personal-attendance')
+      if (!isPersonalAttendance(next)) throw new Error('个人考勤服务返回了无效数据。')
+      setPersonal(next)
+      setPersonalState('ready')
+    } catch (value) {
+      setPersonalState('error')
+      setPersonalError(value instanceof Error ? value.message : '个人考勤读取失败。')
+    }
+  }, [])
+  useEffect(() => { if (view === 'personal' && personalState === 'idle') void loadPersonal() }, [loadPersonal, personalState, view])
   return <section className="iepms-attendance-workspace" aria-labelledby="iepms-attendance-title">
     <header className="iepms-attendance-header">
       <div>
         {workspace !== undefined && <button type="button" className="iepms-attendance-back" onClick={workspace.close} aria-label="返回对话" title="返回对话"><IconChevronLeftOutline16 size={16} /></button>}
         <IconAlarmClockOutline16 size={20} />
-        <span><h1 id="iepms-attendance-title">考勤监控</h1><p>iEPMS 本地运行状态</p></span>
+        <span><h1 id="iepms-attendance-title">考勤监控</h1><p>{view === 'management' ? '管理版 · 本地运行状态与配置' : '个人版 · 我的出勤记录'}</p></span>
       </div>
-      <button type="button" className="iepms-attendance-refresh" onClick={() => { void load() }} disabled={state === 'loading'} title="刷新状态"><IconInspectOutline16 size={16} /></button>
+      <div className="iepms-attendance-header-actions">
+        <div className="iepms-attendance-view-switch" role="tablist" aria-label="考勤视图">
+          <button type="button" role="tab" aria-selected={view === 'management'} className={view === 'management' ? 'is-active' : ''} onClick={() => { setView('management') }}>管理版</button>
+          <button type="button" role="tab" aria-selected={view === 'personal'} className={view === 'personal' ? 'is-active' : ''} onClick={() => { setView('personal') }}>个人版</button>
+        </div>
+        <button type="button" className="iepms-attendance-refresh" onClick={() => { void (view === 'management' ? load() : loadPersonal()) }} disabled={view === 'management' ? state === 'loading' : personalState === 'loading'} title="刷新状态"><IconInspectOutline16 size={16} /></button>
+      </div>
     </header>
-    {state === 'loading' && <PanelState title="正在读取本地状态" text="不会登录 iEPMS，也不会发送通知。" />}
-    {state === 'error' && <PanelState title="暂时无法读取考勤状态" text={error} retry={() => { void load() }} />}
-    {state === 'ready' && snapshot !== undefined && configuration !== undefined && <Dashboard
+    {view === 'management' && state === 'loading' && <PanelState title="正在读取本地状态" text="不会登录 iEPMS，也不会发送通知。" />}
+    {view === 'management' && state === 'error' && <PanelState title="暂时无法读取考勤状态" text={error} retry={() => { void load() }} />}
+    {view === 'management' && state === 'ready' && snapshot !== undefined && configuration !== undefined && <Dashboard
       snapshot={snapshot}
       configuration={configuration}
       onConfigurationSaved={next => { setConfiguration(next); void load(true) }}
     />}
+    {view === 'personal' && (personalState === 'idle' || personalState === 'loading') && <PersonalSkeleton />}
+    {view === 'personal' && personalState === 'error' && <PanelState title="暂时无法读取个人考勤" text={personalError} retry={() => { void loadPersonal() }} />}
+    {view === 'personal' && personalState === 'ready' && personal !== undefined && <PersonalDashboard value={personal} openSettings={() => { setView('management') }} />}
   </section>
 }
 
@@ -165,6 +199,69 @@ function Dashboard({ snapshot, configuration, onConfigurationSaved }: { snapshot
       <Readiness label="最近导出数据" ready={data.lastDataAvailable} missingLabel="暂无数据" />
     </ul></section>
   </div>
+}
+
+function PersonalDashboard({ value, openSettings }: { value: PersonalAttendanceView; openSettings: () => void }) {
+  const today = new Date()
+  const currentMonth = monthKey(today)
+  const [selectedMonth, setSelectedMonth] = useState(currentMonth)
+  const records = value.records.filter(record => record.date.startsWith(`${selectedMonth}-`))
+  const recordByDate = new Map(records.map(record => [record.date, record]))
+  const todayRecord = value.records.find(record => record.date === dateKey(today))
+  const attendanceDays = records.filter(record => record.status !== 'missing' && record.status !== 'pending').length
+  const normalPunches = records.filter(record => record.status === 'normal' || record.status === 'checked-in').reduce((total, record) => total + Number(Boolean(record.clockIn)) + Number(Boolean(record.clockOut)), 0)
+  const late = records.filter(record => record.status === 'late').length
+  const early = records.filter(record => record.status === 'early').length
+  const missing = records.filter(record => record.status === 'missing').length
+  const expectedDays = expectedWorkdays(selectedMonth, currentMonth)
+  const attendanceRate = expectedDays === 0 ? 0 : Math.min(100, Math.round(attendanceDays / expectedDays * 100))
+  const anomalyCount = late + early + missing
+  const recent = [...value.records].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8)
+  if (!value.configured) return <div className="iepms-personal-empty"><IconUserOutline16 size={24} /><h2>先配置个人工号</h2><p>个人版只展示当前配置工号对应的本地考勤记录，不会显示其他员工明细。</p><button type="button" onClick={openSettings}>前往管理版配置</button></div>
+  return <div className="iepms-personal-content">
+    {!value.source.latestAvailable && <div className="iepms-personal-notice"><IconDataOutline16 size={15} /><span>暂无个人考勤数据。完成一次巡检后，个人版会从本地结果中整理记录。</span></div>}
+    <section className="iepms-personal-metrics" aria-label="个人考勤概览">
+      <PersonalMetric icon={<IconAlarmClockOutline16 size={17} />} label="今日状态" value={todayRecord === undefined ? '暂无记录' : personalStatusLabel(todayRecord.status)} detail={todayRecord === undefined ? '等待本地巡检数据' : `上班 ${todayRecord.clockIn || '-'} / 下班 ${todayRecord.clockOut || '-'}`} tone={statusTone(todayRecord?.status)} />
+      <PersonalMetric icon={<IconGaugeOutline16 size={17} />} label="本月出勤" value={`${attendanceDays}天`} detail={`工作日估算 ${expectedDays} 天`} tone="blue" />
+      <PersonalMetric icon={<IconCheckCircleOutline16 size={17} />} label="正常打卡" value={`${normalPunches}次`} detail={`出勤率 ${attendanceRate}%`} tone="green" />
+      <PersonalMetric icon={<IconWarningTriangleOutline16 size={17} />} label="异常记录" value={`${anomalyCount}次`} detail={`迟到 ${late} 次 · 早退 ${early} 次 · 缺卡 ${missing} 次`} tone={anomalyCount > 0 ? 'orange' : 'muted'} />
+    </section>
+    <div className="iepms-personal-grid">
+      <section className="iepms-personal-card iepms-personal-calendar"><header><span><IconAlarmClockOutline16 size={16} /><h2>月度打卡日历</h2></span><div><button type="button" aria-label="上个月" onClick={() => { setSelectedMonth(shiftMonth(selectedMonth, -1)) }}><IconChevronLeftOutline16 size={15} /></button><strong>{selectedMonth.replace('-', '年')}月</strong><button type="button" aria-label="下个月" disabled={selectedMonth >= currentMonth} onClick={() => { setSelectedMonth(shiftMonth(selectedMonth, 1)) }}><IconChevronRightOutline16 size={15} /></button></div></header>
+        <div className="iepms-calendar-weekdays" aria-hidden="true">{['日', '一', '二', '三', '四', '五', '六'].map(day => <span key={day}>{day}</span>)}</div>
+        <div className="iepms-calendar-days">{calendarCells(selectedMonth).map(cell => {
+          const record = recordByDate.get(cell.date)
+          const isToday = cell.date === dateKey(today)
+          return <div key={cell.date} className={`iepms-calendar-day${cell.inMonth ? '' : ' is-outside'}${isToday ? ' is-today' : ''}`} title={record === undefined ? cell.date : `${cell.date} ${personalStatusLabel(record.status)}`}><span>{cell.day}</span>{record !== undefined && <i className={`is-${record.status}`} aria-label={personalStatusLabel(record.status)} />}</div>
+        })}</div>
+        <div className="iepms-calendar-legend"><span><i className="is-normal" />正常</span><span><i className="is-late" />迟到/早退</span><span><i className="is-missing" />缺卡</span><span><i className="is-pending" />进行中</span></div>
+      </section>
+      <section className="iepms-personal-card iepms-personal-stats"><header><IconGaugeOutline16 size={16} /><h2>月度考勤统计</h2></header>
+        <StatRow label="出勤天数" value={`${attendanceDays}天`} amount={expectedDays === 0 ? 0 : attendanceDays / expectedDays} detail={`${attendanceDays} / ${expectedDays}`} tone="blue" />
+        <StatRow label="正常打卡" value={`${normalPunches}次`} amount={attendanceDays === 0 ? 0 : normalPunches / (attendanceDays * 2)} detail={`${Math.round(attendanceDays === 0 ? 0 : normalPunches / (attendanceDays * 2) * 100)}%`} tone="green" />
+        <StatRow label="迟到" value={`${late}次`} amount={expectedDays === 0 ? 0 : late / expectedDays} detail={`${Math.round(expectedDays === 0 ? 0 : late / expectedDays * 100)}%`} tone="orange" />
+        <StatRow label="早退" value={`${early}次`} amount={expectedDays === 0 ? 0 : early / expectedDays} detail={`${Math.round(expectedDays === 0 ? 0 : early / expectedDays * 100)}%`} tone="orange" />
+        <StatRow label="缺卡" value={`${missing}次`} amount={expectedDays === 0 ? 0 : missing / expectedDays} detail={`${Math.round(expectedDays === 0 ? 0 : missing / expectedDays * 100)}%`} tone="red" />
+        <StatRow label="出勤率" value={`${attendanceRate}%`} amount={attendanceRate / 100} detail={`${attendanceRate}%`} tone="blue" />
+      </section>
+    </div>
+    <section className="iepms-personal-card iepms-personal-records"><header><IconChecklistOutline16 size={16} /><h2>最近打卡记录</h2><span>账号 {value.accountMasked}</span></header>
+      {recent.length === 0 ? <Empty text="暂无本地个人记录。巡检生成当日明细后会显示在这里。" /> : <div className="iepms-personal-table-wrap"><table><thead><tr><th>日期</th><th>上班时间</th><th>下班时间</th><th>工时</th><th>状态</th></tr></thead><tbody>{recent.map(record => <tr key={record.date}><td>{record.date.slice(5)}</td><td>{record.clockIn || '-'}</td><td>{record.clockOut || '-'}</td><td>{formatWorkMinutes(record.workMinutes)}</td><td><strong className={`is-${record.status}`}>{personalStatusLabel(record.status)}</strong></td></tr>)}</tbody></table></div>}
+    </section>
+  </div>
+}
+
+function PersonalMetric({ icon, label, value, detail, tone }: { icon: React.ReactNode; label: string; value: string; detail: string; tone: 'blue' | 'green' | 'orange' | 'muted' }) {
+  return <article className={`iepms-personal-metric is-${tone}`}><div><span>{icon}</span><p>{label}</p></div><strong>{value}</strong><small>{detail}</small></article>
+}
+
+function StatRow({ label, value, amount, detail, tone }: { label: string; value: string; amount: number; detail: string; tone: 'blue' | 'green' | 'orange' | 'red' }) {
+  const percent = Math.max(0, Math.min(100, Math.round(amount * 100)))
+  return <div className={`iepms-stat-row is-${tone}`}><span>{label}</span><strong>{value}</strong><div role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}><i style={{ width: `${percent}%` }} /></div><small>{detail}</small></div>
+}
+
+function PersonalSkeleton() {
+  return <div className="iepms-personal-content is-loading" aria-label="正在读取个人考勤" aria-busy="true"><div className="iepms-personal-metrics">{[0, 1, 2, 3].map(item => <div className="iepms-personal-skeleton" key={item} />)}</div><div className="iepms-personal-grid"><div className="iepms-personal-skeleton is-large" /><div className="iepms-personal-skeleton is-large" /></div><div className="iepms-personal-skeleton is-table" /></div>
 }
 
 function ConfigurationEditor({ value, onSaved }: { value: ConfigurationView; onSaved: (value: ConfigurationView) => void }) {
@@ -244,6 +341,47 @@ function PanelState({ title, text, retry }: { title: string; text: string; retry
 function taskStateLabel(value: string): string { return value === 'ready' ? '就绪' : value === 'running' ? '运行中' : value === 'disabled' ? '已停用' : '未知' }
 function isSnapshot(value: unknown): value is DashboardSnapshot { return value !== null && typeof value === 'object' && 'status' in value && 'roster' in value && 'schedule' in value && 'recentRuns' in value }
 function isConfiguration(value: unknown): value is ConfigurationView { return value !== null && typeof value === 'object' && 'accountConfigured' in value && 'passwordConfigured' in value && 'browserChannel' in value }
+function isPersonalAttendance(value: unknown): value is PersonalAttendanceView {
+  if (value === null || typeof value !== 'object' || !('configured' in value) || !('records' in value)) return false
+  const record = value as Partial<PersonalAttendanceView>
+  return typeof record.configured === 'boolean' && Array.isArray(record.records) && record.records.every(item => item !== null && typeof item === 'object' && typeof item.date === 'string' && typeof item.status === 'string')
+}
+
+function dateKey(value: Date): string { return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}` }
+function monthKey(value: Date): string { return dateKey(value).slice(0, 7) }
+function parseMonth(value: string): [number, number] {
+  const match = /^(\d{4})-(\d{2})$/u.exec(value)
+  return match === null ? [new Date().getFullYear(), new Date().getMonth() + 1] : [Number(match[1]), Number(match[2])]
+}
+function shiftMonth(value: string, amount: number): string {
+  const [year, month] = parseMonth(value)
+  return monthKey(new Date(year, month - 1 + amount, 1))
+}
+function calendarCells(value: string): Array<{ date: string; day: number; inMonth: boolean }> {
+  const [year, month] = parseMonth(value)
+  const first = new Date(year, month - 1, 1)
+  const start = new Date(year, month - 1, 1 - first.getDay())
+  return Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(start.getFullYear(), start.getMonth(), start.getDate() + index)
+    return { date: dateKey(date), day: date.getDate(), inMonth: date.getMonth() === month - 1 }
+  })
+}
+function expectedWorkdays(value: string, currentMonth: string): number {
+  if (value > currentMonth) return 0
+  const [year, month] = parseMonth(value)
+  const finalDay = value === currentMonth ? new Date().getDate() : new Date(year, month, 0).getDate()
+  let count = 0
+  for (let day = 1; day <= finalDay; day += 1) {
+    const weekday = new Date(year, month - 1, day).getDay()
+    if (weekday !== 0 && weekday !== 6) count += 1
+  }
+  return count
+}
+function personalStatusLabel(value: PersonalAttendanceStatus): string {
+  return value === 'normal' ? '正常' : value === 'late' ? '迟到' : value === 'early' ? '早退' : value === 'missing' ? '缺卡' : value === 'checked-in' ? '已打卡' : '待完成'
+}
+function statusTone(value?: PersonalAttendanceStatus): 'blue' | 'green' | 'orange' | 'muted' { return value === 'normal' || value === 'checked-in' ? 'green' : value === 'late' || value === 'early' || value === 'missing' ? 'orange' : 'muted' }
+function formatWorkMinutes(value: number | null): string { return value === null ? '-' : `${Math.floor(value / 60)}h${String(value % 60).padStart(2, '0')}m` }
 
 async function requestApi<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_PREFIX}/${path}`, {

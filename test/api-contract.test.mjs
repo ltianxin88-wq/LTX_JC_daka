@@ -7,6 +7,7 @@ test('local API permits reads and a scoped configuration update with a same-orig
   assert.match(source, /CLIENT_HEADER/)
   assert.match(source, /'snapshot'/)
   assert.match(source, /path === 'configuration' && method === 'PUT'/)
+  assert.match(source, /path === 'personal-attendance' && method === 'GET'/)
   assert.match(source, /validateConfigurationUpdate/)
   assert.match(source, /16 \* 1024/)
   assert.doesNotMatch(source, /child_process|exec\(/)

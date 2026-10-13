@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { AttendanceBridge, BridgeError } from './bridge.js'
 import {
   API_PREFIX, CLIENT_HEADER, CLIENT_NAME,
-  type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type ReadCommand, type RecentRunView, type RosterView, type ScheduleView, type StatusView,
+  type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type PersonalAttendanceView, type ReadCommand, type RecentRunView, type RosterView, type ScheduleView, type StatusView,
 } from './contracts.js'
 import type { RuntimeContextLike } from './runtime.js'
 
@@ -24,6 +24,9 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, bridge: Atten
   const method = req.method ?? 'GET'
   if (path === 'configuration' && method === 'GET') {
     return sendJson(res, 200, await bridge.read<ConfigurationView>('configuration-read'))
+  }
+  if (path === 'personal-attendance' && method === 'GET') {
+    return sendJson(res, 200, await bridge.read<PersonalAttendanceView>('personal-attendance'))
   }
   if (path === 'configuration' && method === 'PUT') {
     const settings = validateConfigurationUpdate(await readJsonBody(req))

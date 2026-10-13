@@ -9,6 +9,7 @@ diagnostic output is never written to stdout.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -31,7 +32,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 16 * 1024
-READ_COMMANDS = {"status", "roster-summary", "recent-runs", "schedule-status", "configuration-read"}
+READ_COMMANDS = {"status", "roster-summary", "recent-runs", "schedule-status", "configuration-read", "personal-attendance"}
 WRITE_COMMANDS = {"configuration-update"}
 ALLOWED_COMMANDS = READ_COMMANDS | WRITE_COMMANDS
 SCRIPT_ROOT = Path(__file__).resolve().parent
@@ -42,6 +43,7 @@ CONFIG_FILE = ROOT / "config.json"
 ROSTER_FILE = ROOT / "roster.xlsx"
 LOG_FILE = ROOT / "run_log.txt"
 LAST_DATA_FILE = ROOT / "last_attendance_data.json"
+PERSONAL_HISTORY_FILE = ROOT / ".personal_attendance_history.json"
 
 
 def emit(command: str, data: dict[str, Any] | None = None, error: tuple[str, str] | None = None) -> int:
@@ -181,18 +183,22 @@ def parse_configuration_update(settings: dict[str, Any]) -> dict[str, Any]:
     return parsed
 
 
-def write_config_atomic(config: dict[str, Any]) -> None:
-    handle, temp_name = tempfile.mkstemp(prefix="config.", suffix=".tmp", dir=ROOT)
+def write_json_atomic(path: Path, value: dict[str, Any]) -> None:
+    handle, temp_name = tempfile.mkstemp(prefix=f"{path.stem}.", suffix=".tmp", dir=ROOT)
     try:
         with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
-            json.dump(config, stream, ensure_ascii=False, indent=2)
+            json.dump(value, stream, ensure_ascii=False, indent=2)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temp_name, CONFIG_FILE)
+        os.replace(temp_name, path)
     finally:
         if os.path.exists(temp_name):
             os.unlink(temp_name)
+
+
+def write_config_atomic(config: dict[str, Any]) -> None:
+    write_json_atomic(CONFIG_FILE, config)
 
 
 def update_configuration(settings: dict[str, Any]) -> dict[str, Any]:
@@ -226,6 +232,130 @@ def update_configuration(settings: dict[str, Any]) -> dict[str, Any]:
     config.pop("password", None)
     write_config_atomic(config)
     return configuration_view(config)
+
+
+def normalize_account(value: Any) -> str:
+    account = str(value or "").strip()
+    return account[:-2] if account.endswith(".0") else account
+
+
+def normalize_clock(value: Any) -> str:
+    text = str(value or "").strip()
+    match = re.search(r"(?:^|\s)(\d{1,2}):(\d{2})(?::\d{2})?$", text)
+    if match is None:
+        return ""
+    hour, minute = int(match.group(1)), int(match.group(2))
+    return f"{hour:02d}:{minute:02d}" if hour < 24 and minute < 60 else ""
+
+
+def sanitize_personal_record(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    date_value = str(value.get("date", "")).strip()
+    try:
+        datetime.strptime(date_value, "%Y-%m-%d")
+    except ValueError:
+        return None
+    state = str(value.get("status", ""))
+    if state not in {"normal", "late", "early", "missing", "checked-in", "pending"}:
+        return None
+    minutes = value.get("workMinutes")
+    if not isinstance(minutes, int) or not 0 <= minutes <= 24 * 60:
+        minutes = None
+    return {
+        "date": date_value,
+        "clockIn": normalize_clock(value.get("clockIn")),
+        "clockOut": normalize_clock(value.get("clockOut")),
+        "workMinutes": minutes,
+        "status": state,
+    }
+
+
+def personal_record_from_latest(config: dict[str, Any]) -> dict[str, Any] | None:
+    username = normalize_account(config.get("username"))
+    if not username or not LAST_DATA_FILE.exists():
+        return None
+    try:
+        source = json.loads(LAST_DATA_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(source, dict):
+        return None
+    morning_source = source.get("morning") if isinstance(source.get("morning"), list) else []
+    evening_source = source.get("evening") if isinstance(source.get("evening"), list) else []
+    morning = [row for row in morning_source if isinstance(row, dict) and normalize_account(row.get("打卡账号")) == username]
+    evening = [row for row in evening_source if isinstance(row, dict) and normalize_account(row.get("打卡账号")) == username]
+    if not morning and not evening:
+        return None
+    clock_in_values = [normalize_clock(row.get("打卡时间")) for row in morning]
+    clock_in_values += [normalize_clock(row.get("最早打卡")) for row in evening]
+    clock_out_values = [normalize_clock(row.get("最晚打卡")) for row in evening]
+    clock_in_values = [value for value in clock_in_values if value]
+    clock_out_values = [value for value in clock_out_values if value]
+    clock_in = min(clock_in_values) if clock_in_values else ""
+    clock_out = max(clock_out_values) if clock_out_values else ""
+    if clock_out == clock_in:
+        clock_out = ""
+    status_text = " ".join(str(row.get(key, "")) for row in morning + evening for key in ("上班状态", "下班状态", "工时质检"))
+    if "迟到" in status_text:
+        state = "late"
+    elif "早退" in status_text or "不足" in status_text:
+        state = "early"
+    elif any(word in status_text for word in ("缺卡", "未出勤", "未打下班卡")):
+        state = "missing"
+    elif clock_in and clock_out:
+        state = "normal"
+    elif clock_in:
+        state = "checked-in"
+    else:
+        state = "pending"
+    hours = []
+    for row in evening:
+        try:
+            amount = float(row.get("核算工时(h)", ""))
+            if 0 <= amount <= 24:
+                hours.append(amount)
+        except (TypeError, ValueError):
+            pass
+    return sanitize_personal_record({
+        "date": source.get("date"), "clockIn": clock_in, "clockOut": clock_out,
+        "workMinutes": round(max(hours) * 60) if hours else None, "status": state,
+    })
+
+
+def read_personal_history(account_hash: str) -> list[dict[str, Any]]:
+    if not PERSONAL_HISTORY_FILE.exists():
+        return []
+    try:
+        value = json.loads(PERSONAL_HISTORY_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(value, dict) or value.get("schemaVersion") != 1 or value.get("accountHash") != account_hash:
+        return []
+    raw_records = value.get("records") if isinstance(value.get("records"), list) else []
+    return [record for item in raw_records if (record := sanitize_personal_record(item)) is not None]
+
+
+def personal_attendance() -> dict[str, Any]:
+    import keyring_utils
+    config, valid = read_config()
+    username = normalize_account(config.get("username")) if valid else ""
+    if not username:
+        return {"configured": False, "accountMasked": "", "records": [], "source": {"latestAvailable": LAST_DATA_FILE.exists(), "historyDays": 0}}
+    account_hash = hashlib.sha256(username.encode("utf-8")).hexdigest()
+    records = read_personal_history(account_hash)
+    latest = personal_record_from_latest(config)
+    if latest is not None:
+        by_date = {str(item["date"]): item for item in records}
+        by_date[latest["date"]] = latest
+        records = sorted(by_date.values(), key=lambda item: item["date"])[-400:]
+        write_json_atomic(PERSONAL_HISTORY_FILE, {"schemaVersion": 1, "accountHash": account_hash, "records": records})
+    with redirect_stdout(sys.stderr):
+        masked = keyring_utils.mask_account(username)
+    return {
+        "configured": True, "accountMasked": masked, "records": records,
+        "source": {"latestAvailable": latest is not None, "historyDays": len(records)},
+    }
 
 
 def roster_summary() -> dict[str, Any]:
@@ -338,6 +468,7 @@ def main() -> int:
             "recent-runs": recent_runs,
             "schedule-status": schedule_status,
             "configuration-read": configuration_view,
+            "personal-attendance": personal_attendance,
             "configuration-update": lambda: update_configuration(settings or {}),
         }
         return emit(command, data=handlers[command]())
