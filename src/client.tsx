@@ -217,9 +217,9 @@ function PersonalDashboard({ value, openSettings }: { value: PersonalAttendanceV
   const attendanceRate = expectedDays === 0 ? 0 : Math.min(100, Math.round(attendanceDays / expectedDays * 100))
   const anomalyCount = late + early + missing
   const recent = [...value.records].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8)
-  if (!value.configured) return <div className="iepms-personal-empty"><IconUserOutline16 size={24} /><h2>先配置个人工号</h2><p>个人版只展示当前配置工号对应的本地考勤记录，不会显示其他员工明细。</p><button type="button" onClick={openSettings}>前往管理版配置</button></div>
   return <div className="iepms-personal-content">
-    {!value.source.latestAvailable && <div className="iepms-personal-notice"><IconDataOutline16 size={15} /><span>暂无个人考勤数据。完成一次巡检后，个人版会从本地结果中整理记录。</span></div>}
+    {!value.configured ? <div className="iepms-personal-notice is-warning"><IconUserOutline16 size={15} /><span>尚未配置个人工号，当前显示空数据布局。</span><button type="button" onClick={openSettings}>前往配置</button></div>
+      : !value.source.latestAvailable && <div className="iepms-personal-notice"><IconDataOutline16 size={15} /><span>暂无个人考勤数据。完成一次巡检后，个人版会从本地结果中整理记录。</span></div>}
     <section className="iepms-personal-metrics" aria-label="个人考勤概览">
       <PersonalMetric icon={<IconAlarmClockOutline16 size={17} />} label="今日状态" value={todayRecord === undefined ? '暂无记录' : personalStatusLabel(todayRecord.status)} detail={todayRecord === undefined ? '等待本地巡检数据' : `上班 ${todayRecord.clockIn || '-'} / 下班 ${todayRecord.clockOut || '-'}`} tone={statusTone(todayRecord?.status)} />
       <PersonalMetric icon={<IconGaugeOutline16 size={17} />} label="本月出勤" value={`${attendanceDays}天`} detail={`工作日估算 ${expectedDays} 天`} tone="blue" />
@@ -245,7 +245,7 @@ function PersonalDashboard({ value, openSettings }: { value: PersonalAttendanceV
         <StatRow label="出勤率" value={`${attendanceRate}%`} amount={attendanceRate / 100} detail={`${attendanceRate}%`} tone="blue" />
       </section>
     </div>
-    <section className="iepms-personal-card iepms-personal-records"><header><IconChecklistOutline16 size={16} /><h2>最近打卡记录</h2><span>账号 {value.accountMasked}</span></header>
+    <section className="iepms-personal-card iepms-personal-records"><header><IconChecklistOutline16 size={16} /><h2>最近打卡记录</h2><span>{value.configured ? `账号 ${value.accountMasked}` : '尚未配置账号'}</span></header>
       {recent.length === 0 ? <Empty text="暂无本地个人记录。巡检生成当日明细后会显示在这里。" /> : <div className="iepms-personal-table-wrap"><table><thead><tr><th>日期</th><th>上班时间</th><th>下班时间</th><th>工时</th><th>状态</th></tr></thead><tbody>{recent.map(record => <tr key={record.date}><td>{record.date.slice(5)}</td><td>{record.clockIn || '-'}</td><td>{record.clockOut || '-'}</td><td>{formatWorkMinutes(record.workMinutes)}</td><td><strong className={`is-${record.status}`}>{personalStatusLabel(record.status)}</strong></td></tr>)}</tbody></table></div>}
     </section>
   </div>
