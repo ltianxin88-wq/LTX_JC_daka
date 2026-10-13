@@ -149,6 +149,7 @@ export interface PersonalMakeupItem {
     mode: PersonalMakeupMode;
     deadline: string;
     message: string;
+    overtimeReminderDates: string[];
     application?: PersonalMakeupApplication;
 }
 export interface PersonalMakeupView {

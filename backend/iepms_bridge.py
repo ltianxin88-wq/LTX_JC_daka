@@ -797,6 +797,19 @@ def is_non_working_day(value: date) -> bool:
         return value.weekday() >= 5
 
 
+def overtime_reminder_dates(deadline: datetime) -> list[str]:
+    """Return the first continuous non-working period after a makeup window."""
+    candidate = deadline.date() + timedelta(days=1)
+    dates: list[str] = []
+    for _ in range(21):
+        if is_non_working_day(candidate):
+            dates.append(candidate.isoformat())
+        elif dates:
+            break
+        candidate += timedelta(days=1)
+    return dates
+
+
 def read_personal_makeup_requests(account_hash: str) -> dict[str, dict[str, Any]]:
     ensure_plugin_database()
     connection = database_connection()
@@ -837,6 +850,7 @@ def personal_makeup_view() -> dict[str, Any]:
         item: dict[str, Any] = {
             "attendanceDate": record["date"], "mode": mode,
             "deadline": deadline.strftime("%Y-%m-%d %H:%M"), "message": message,
+            "overtimeReminderDates": overtime_reminder_dates(deadline),
         }
         if application is not None:
             item["application"] = application

@@ -257,7 +257,7 @@ function PersonalDashboard({ value, automation, makeup, onAccountSaved, onAutoma
         <div className="iepms-calendar-days">{calendarCells(selectedMonth).map(cell => {
           const record = recordByDate.get(cell.date)
           const isToday = cell.date === dateKey(today)
-          const reminder = record?.status === 'missing' ? undefined : makeupReminderForDate(cell.date, makeup, dateKey(today))
+          const reminder = record?.status === 'missing' ? undefined : makeupReminderForDate(cell.date, makeup)
           const className = `iepms-calendar-day${cell.inMonth ? '' : ' is-outside'}${isToday ? ' is-today' : ''}${reminder === undefined ? '' : ` is-${reminder}-reminder`}`
           const label = record?.status === 'missing' ? '缺卡' : reminder === 'makeup' ? '可补卡' : reminder === 'overtime' ? '可加班补卡' : undefined
           return <div key={cell.date} className={className} title={label === undefined ? record === undefined ? cell.date : `${cell.date} ${personalStatusLabel(record.status)}` : `${cell.date} ${label}`}><span>{cell.day}</span>{record !== undefined && <i className={`is-${record.status}`} aria-label={personalStatusLabel(record.status)} />}{label !== undefined && <b>{label}</b>}</div>
@@ -609,7 +609,7 @@ function isPersonalAutomation(value: unknown): value is PersonalAutomationView {
 function isPersonalMakeup(value: unknown): value is PersonalMakeupView {
   if (value === null || typeof value !== 'object' || !('configured' in value) || !('items' in value)) return false
   const result = value as Partial<PersonalMakeupView>
-  return typeof result.configured === 'boolean' && Array.isArray(result.items) && result.items.every(item => item !== null && typeof item === 'object' && typeof item.attendanceDate === 'string' && ['makeup', 'overtime', 'submitted'].includes(String(item.mode)) && typeof item.deadline === 'string' && typeof item.message === 'string')
+  return typeof result.configured === 'boolean' && Array.isArray(result.items) && result.items.every(item => item !== null && typeof item === 'object' && typeof item.attendanceDate === 'string' && ['makeup', 'overtime', 'submitted'].includes(String(item.mode)) && typeof item.deadline === 'string' && typeof item.message === 'string' && Array.isArray(item.overtimeReminderDates) && item.overtimeReminderDates.every(date => typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/u.test(date)))
 }
 function isRosterRow(value: unknown): value is RosterRow {
   if (value === null || typeof value !== 'object') return false
@@ -628,12 +628,12 @@ function isPersonalRoster(value: unknown): value is PersonalRosterView {
 }
 
 function dateKey(value: Date): string { return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}` }
-function makeupReminderForDate(date: string, makeup: PersonalMakeupView, today: string): 'makeup' | 'overtime' | undefined {
+function makeupReminderForDate(date: string, makeup: PersonalMakeupView): 'makeup' | 'overtime' | undefined {
   let overtimeAvailable = false
   for (const item of makeup.items) {
     const deadlineDate = item.deadline.slice(0, 10)
     if (date > item.attendanceDate && date <= deadlineDate) return 'makeup'
-    if (item.mode === 'overtime' && date > deadlineDate && date <= today) overtimeAvailable = true
+    if (item.overtimeReminderDates.includes(date)) overtimeAvailable = true
   }
   return overtimeAvailable ? 'overtime' : undefined
 }
