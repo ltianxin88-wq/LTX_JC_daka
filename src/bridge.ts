@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Config } from './config.js'
-import type { BridgeCommand, BridgeResponse, ConfigurationUpdate, ConfigurationView, PersonalAccountUpdate, PersonalAttendanceView, PersonalAutomationView, PersonalRosterUpdate, PersonalRosterView, PersonalScheduleUpdate, ReadCommand, RosterTableView, RosterUpdate } from './contracts.js'
+import type { BridgeCommand, BridgeResponse, ConfigurationUpdate, ConfigurationView, PersonalAccountUpdate, PersonalAttendanceView, PersonalAutomationView, PersonalMakeupSubmit, PersonalMakeupView, PersonalRosterUpdate, PersonalRosterView, PersonalScheduleUpdate, ReadCommand, RosterTableView, RosterUpdate } from './contracts.js'
 
 const MAX_STDOUT_BYTES = 2 * 1024 * 1024
 const MAX_STDERR_BYTES = 16 * 1024
@@ -77,7 +77,14 @@ export class AttendanceBridge {
     return response.data as PersonalRosterView
   }
 
-  private invoke(command: BridgeCommand, settings?: ConfigurationUpdate | PersonalAccountUpdate | PersonalScheduleUpdate | RosterUpdate | PersonalRosterUpdate | Record<string, never>): Promise<BridgeResponse<unknown>> {
+  async submitPersonalMakeup(settings: PersonalMakeupSubmit): Promise<PersonalMakeupView> {
+    if (!existsSync(this.bridgePath)) throw new BridgeError('BACKEND_UNAVAILABLE', '未找到 iEPMS 本地桥接程序。')
+    const response = await this.invoke('personal-makeup-submit', settings)
+    if (!response.ok || response.data === undefined) throw new BridgeError(response.error?.code ?? 'BRIDGE_FAILED', response.error?.message ?? '补卡申请保存失败。')
+    return response.data as PersonalMakeupView
+  }
+
+  private invoke(command: BridgeCommand, settings?: ConfigurationUpdate | PersonalAccountUpdate | PersonalScheduleUpdate | PersonalMakeupSubmit | RosterUpdate | PersonalRosterUpdate | Record<string, never>): Promise<BridgeResponse<unknown>> {
     return new Promise((resolveResult, reject) => {
       const child = spawn(this.config.pythonPath, [this.bridgePath], {
         cwd: this.config.backendRoot,

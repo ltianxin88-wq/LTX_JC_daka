@@ -168,10 +168,11 @@ All state-changing requests require an operation nonce issued by the plugin runt
 
 - [ ] Surface existing managed Task Scheduler tasks and their next/last run state.
 - [ ] Add explicit enable, edit and disable flows that use the existing scheduler safeguards.
-- [x] Add roster validation, management table editing and a one-row personal roster editor before accepting workbook writes.
+- [x] Add roster validation, management table editing and a one-row personal roster editor backed by plugin-owned SQLite storage; import legacy Excel data once without overwriting it.
 - [x] Add configuration health checks for account presence, credential availability, webhook presence and browser/dependency readiness without returning their values.
 - [x] Add a guarded DSH settings form for account credentials, Webhook, browser channel and overnight policy while retaining backward compatibility with the legacy GUI.
 - [x] Add switchable management and personal dashboards with account-scoped local attendance history, monthly calendar, aggregate statistics and recent records.
+- [x] Add account-scoped local 补卡登记: three-calendar-day/72-hour cutoff, non-working-day overtime fallback, SQLite persistence and no unverified upstream submission.
 - [ ] Keep configuration file formats backward-compatible until a migration and rollback path is tested.
 
 ### Acceptance Criteria

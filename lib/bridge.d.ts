@@ -1,5 +1,5 @@
 import type { Config } from './config.js';
-import type { ConfigurationUpdate, ConfigurationView, PersonalAccountUpdate, PersonalAttendanceView, PersonalAutomationView, PersonalRosterUpdate, PersonalRosterView, PersonalScheduleUpdate, ReadCommand, RosterTableView, RosterUpdate } from './contracts.js';
+import type { ConfigurationUpdate, ConfigurationView, PersonalAccountUpdate, PersonalAttendanceView, PersonalAutomationView, PersonalMakeupSubmit, PersonalMakeupView, PersonalRosterUpdate, PersonalRosterView, PersonalScheduleUpdate, ReadCommand, RosterTableView, RosterUpdate } from './contracts.js';
 export declare class AttendanceBridge {
     private readonly config;
     readonly bridgePath: string;
@@ -11,6 +11,7 @@ export declare class AttendanceBridge {
     updatePersonalSchedule(settings: PersonalScheduleUpdate): Promise<PersonalAutomationView>;
     updateRoster(settings: RosterUpdate): Promise<RosterTableView>;
     updatePersonalRoster(settings: PersonalRosterUpdate): Promise<PersonalRosterView>;
+    submitPersonalMakeup(settings: PersonalMakeupSubmit): Promise<PersonalMakeupView>;
     private invoke;
 }
 export declare class BridgeError extends Error {

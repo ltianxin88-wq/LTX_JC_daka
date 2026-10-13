@@ -9,9 +9,9 @@ import test from 'node:test'
 const bridge = fileURLToPath(new URL('../backend/iepms_bridge.py', import.meta.url))
 const backendRoot = 'D:/dingding/daka'
 
-async function invoke(request, root = backendRoot) {
+async function invoke(request, root = backendRoot, environment = {}) {
   return new Promise((resolve, reject) => {
-    const process = spawn('python', [bridge], { env: { ...processEnv(), IEPMS_BACKEND_ROOT: root, PYTHONUTF8: '1' }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+    const process = spawn('python', [bridge], { env: { ...processEnv(), IEPMS_BACKEND_ROOT: root, PYTHONUTF8: '1', ...environment }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
     let stdout = ''
     let stderr = ''
     process.stdout.setEncoding('utf8')
@@ -66,6 +66,17 @@ async function readRoster(path) {
     'workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)',
     'print(json.dumps(list(workbook.active.iter_rows(values_only=True)), ensure_ascii=False))',
   ].join('; '), path)
+  return JSON.parse(stdout)
+}
+
+async function readDatabase(path, sql) {
+  const stdout = await runPython([
+    'import json, sqlite3, sys',
+    'value = json.load(sys.stdin)',
+    'connection = sqlite3.connect(value["path"])',
+    'connection.row_factory = sqlite3.Row',
+    'print(json.dumps([dict(row) for row in connection.execute(value["sql"])], ensure_ascii=False))',
+  ].join('; '), JSON.stringify({ path, sql }))
   return JSON.parse(stdout)
 }
 
@@ -160,8 +171,9 @@ test('personal attendance uses its independent account and returns only a saniti
     assert.deepEqual(value.data.records, [{ date: '2026-10-13', clockIn: '08:52', clockOut: '18:03', workMinutes: 552, status: 'normal' }])
     const serialized = JSON.stringify(value)
     for (const secret of ['Target Person', 'Other Person', 'Private Project', 'Other Project', 'test.user', 'other.user']) assert.equal(serialized.includes(secret), false)
-    const history = await readFile(join(root, '.personal_attendance_history.json'), 'utf8')
-    assert.equal(history.includes('test.user'), false)
+    const history = await readDatabase(join(root, 'iepms-attendance-plugin.db'), 'SELECT account_hash, attendance_date FROM personal_history')
+    assert.equal(history.length, 1)
+    assert.equal(JSON.stringify(history).includes('test.user'), false)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
@@ -180,9 +192,10 @@ test('personal account update stores only the independent account and returns a 
     assert.equal(JSON.stringify(value).includes('employee.001'), false)
     const stored = JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))
     assert.equal(stored.username, 'manager.user')
-    assert.equal(stored.personal_account, 'employee.001')
-    const history = await readFile(join(root, '.personal_attendance_history.json'), 'utf8')
-    assert.equal(history.includes('employee.001'), false)
+    assert.equal('personal_account' in stored, false)
+    const settings = await readDatabase(join(root, 'iepms-attendance-plugin.db'), "SELECT key, value FROM plugin_settings WHERE key = 'personal-account'")
+    assert.equal(settings.length, 1)
+    assert.equal(settings[0].value, 'employee.001')
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
@@ -237,7 +250,7 @@ test('personal run and schedule commands reject unscoped input before side effec
   }
 })
 
-test('management roster updates preserve hidden webhooks and create a backup', async () => {
+test('management roster imports Excel once, then preserves hidden webhooks in the database', async () => {
   const root = await mkdtemp(join(tmpdir(), 'iepms-roster-'))
   try {
     await writeFile(join(root, 'config.json'), '{}', 'utf8')
@@ -256,14 +269,14 @@ test('management roster updates preserve hidden webhooks and create a backup', a
     ] } }, root)
     assert.equal(value.ok, true)
     assert.equal(value.data.rows.length, 2)
-    assert.equal(value.data.backupAvailable, true)
+    assert.equal(value.data.backupAvailable, false)
     assert.equal(JSON.stringify(value).includes('secret-hook'), false)
-    const stored = await readRoster(join(root, 'roster.xlsx'))
-    assert.equal(stored[1][3], '苏州')
-    assert.equal(stored[1][5], 'https://example.invalid/secret-hook')
-    assert.equal(stored[2][4], 'employee.002')
-    const backup = await readRoster(join(root, '.roster.backup.xlsx'))
-    assert.equal(backup.length, 2)
+    const stored = await readDatabase(join(root, 'iepms-attendance-plugin.db'), 'SELECT city, account, webhook FROM roster ORDER BY display_order')
+    assert.deepEqual(stored.map(row => [row.city, row.account]), [['苏州', 'employee.001'], ['杭州', 'employee.002']])
+    assert.equal(stored[0].webhook, 'https://example.invalid/secret-hook')
+    const legacy = await readRoster(join(root, 'roster.xlsx'))
+    assert.equal(legacy.length, 2)
+    assert.equal(legacy[1][3], '上海')
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
@@ -288,21 +301,80 @@ test('personal roster updates exactly the row bound to the personal account', as
     assert.equal(value.ok, true)
     assert.equal(value.data.row.name, 'Alice Updated')
     assert.equal(value.data.row.account, '')
-    const stored = await readRoster(join(root, 'roster.xlsx'))
-    assert.equal(stored[1][2], 'Alice Updated')
-    assert.equal(stored[1][3], '苏州')
-    assert.equal(stored[1][4], 'employee.001')
-    assert.equal(stored[1][5], 'https://example.invalid/personal-secret')
-    assert.equal(stored[2][2], 'Bob')
+    const stored = await readDatabase(join(root, 'iepms-attendance-plugin.db'), 'SELECT name, city, account, webhook FROM roster ORDER BY display_order')
+    assert.deepEqual(stored.map(row => [row.name, row.city, row.account]), [['Alice Updated', '苏州', 'employee.001'], ['Bob', '杭州', 'employee.002']])
+    assert.equal(stored[0].webhook, 'https://example.invalid/personal-secret')
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('personal makeup applies the 72-hour cutoff and stores only a local pending request', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'iepms-personal-makeup-'))
+  const duringWindow = { IEPMS_BRIDGE_TEST_NOW: '2026-10-15T23:59:59' }
+  try {
+    await writeFile(join(root, 'config.json'), JSON.stringify({ personal_account: 'employee.001' }), 'utf8')
+    await writeFile(join(root, 'keyring_utils.py'), [
+      'def get_password(username): return "stored"',
+      'def mask_account(username): return "masked"',
+    ].join('\n'), 'utf8')
+    await writeFile(join(root, 'last_attendance_data.json'), JSON.stringify({
+      date: '2026-10-13',
+      morning: [{ '打卡账号': 'employee.001', '上班状态': '缺卡' }], evening: [],
+    }), 'utf8')
+    const before = await invoke({ version: 1, command: 'personal-makeup-read' }, root, duringWindow)
+    assert.deepEqual(before.data.items.map(item => [item.attendanceDate, item.mode, item.deadline]), [['2026-10-13', 'makeup', '2026-10-15 23:59']])
+    const submitted = await invoke({ version: 1, command: 'personal-makeup-submit', settings: { attendanceDate: '2026-10-13', reason: '漏打卡' } }, root, duringWindow)
+    assert.equal(submitted.ok, true)
+    assert.equal(submitted.data.items[0].mode, 'submitted')
+    assert.equal(submitted.data.items[0].application.kind, 'makeup')
+    const stored = await readDatabase(join(root, 'iepms-attendance-plugin.db'), 'SELECT account_hash, attendance_date, request_kind, overtime_date, status FROM personal_makeup_requests')
+    assert.deepEqual(stored.map(row => [row.attendance_date, row.request_kind, row.overtime_date, row.status]), [['2026-10-13', 'makeup', '', 'local-pending']])
+    assert.equal(JSON.stringify(stored).includes('employee.001'), false)
+    try {
+      await invoke({ version: 1, command: 'personal-makeup-submit', settings: { attendanceDate: '2026-10-13' } }, root, duringWindow)
+      assert.fail('duplicate local makeup request must be rejected')
+    } catch (error) {
+      assert.equal(error.value.error.code, 'INVALID_CONFIGURATION')
+    }
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('expired makeup requires a past non-working overtime date', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'iepms-overtime-makeup-'))
+  const expired = { IEPMS_BRIDGE_TEST_NOW: '2026-10-13T00:00:00' }
+  try {
+    await writeFile(join(root, 'config.json'), JSON.stringify({ personal_account: 'employee.001' }), 'utf8')
+    await writeFile(join(root, 'keyring_utils.py'), [
+      'def get_password(username): return "stored"',
+      'def mask_account(username): return "masked"',
+    ].join('\n'), 'utf8')
+    await writeFile(join(root, 'last_attendance_data.json'), JSON.stringify({
+      date: '2026-10-01',
+      morning: [{ '打卡账号': 'employee.001', '上班状态': '缺卡' }], evening: [],
+    }), 'utf8')
+    const before = await invoke({ version: 1, command: 'personal-makeup-read' }, root, expired)
+    assert.equal(before.data.items[0].mode, 'overtime')
+    try {
+      await invoke({ version: 1, command: 'personal-makeup-submit', settings: { attendanceDate: '2026-10-01', overtimeDate: '2026-10-12' } }, root, expired)
+      assert.fail('weekday overtime makeup must be rejected')
+    } catch (error) {
+      assert.equal(error.value.error.code, 'INVALID_CONFIGURATION')
+      assert.match(error.value.error.message, /非工作日/)
+    }
+    const submitted = await invoke({ version: 1, command: 'personal-makeup-submit', settings: { attendanceDate: '2026-10-01', overtimeDate: '2026-03-15', reason: '周末加班' } }, root, expired)
+    assert.equal(submitted.data.items[0].application.kind, 'overtime')
+    assert.equal(submitted.data.items[0].application.overtimeDate, '2026-03-15')
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
 test('plugin client is restricted to the local dashboard API', async () => {
   const source = await readFile(new URL('../src/client.tsx', import.meta.url), 'utf8')
+  const styles = await readFile(new URL('../src/client.css', import.meta.url), 'utf8')
   const contracts = await readFile(new URL('../src/contracts.ts', import.meta.url), 'utf8')
   const bridgeSource = await readFile(new URL('../backend/iepms_bridge.py', import.meta.url), 'utf8')
   const personalRun = bridgeSource.slice(bridgeSource.indexOf('def run_personal_inspection'), bridgeSource.indexOf('\ndef redact_log_line'))
   assert.match(source, /API_PREFIX/)
+  assert.match(source, /iepms-attendance-scroll/)
+  assert.match(styles, /\.iepms-attendance-scroll[^}]*overflow-y:auto/)
   assert.match(contracts, /iepms-attendance-local\/v1/)
   assert.match(source, /结果只在插件内提醒/)
   assert.doesNotMatch(personalRun, /send_dingtalk|default_webhook|webhook_url/i)

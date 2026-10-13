@@ -2,8 +2,8 @@ export declare const PLUGIN_ID = "iepms-attendance-plugin";
 export declare const API_PREFIX = "/iepms-attendance-local/v1";
 export declare const CLIENT_HEADER = "x-iepms-attendance-client";
 export declare const CLIENT_NAME = "dashboard-web";
-export type ReadCommand = 'status' | 'roster-summary' | 'roster-read' | 'personal-roster-read' | 'recent-runs' | 'schedule-status' | 'configuration-read' | 'personal-attendance' | 'personal-automation-read';
-export type BridgeCommand = ReadCommand | 'configuration-update' | 'roster-update' | 'personal-roster-update' | 'personal-account-update' | 'personal-run-start' | 'personal-schedule-update';
+export type ReadCommand = 'status' | 'roster-summary' | 'roster-read' | 'personal-roster-read' | 'recent-runs' | 'schedule-status' | 'configuration-read' | 'personal-attendance' | 'personal-automation-read' | 'personal-makeup-read';
+export type BridgeCommand = ReadCommand | 'configuration-update' | 'roster-update' | 'personal-roster-update' | 'personal-account-update' | 'personal-run-start' | 'personal-schedule-update' | 'personal-makeup-submit';
 export interface BridgeResponse<T> {
     ok: boolean;
     schemaVersion: 1;
@@ -135,6 +135,30 @@ export interface PersonalAttendanceView {
         latestAvailable: boolean;
         historyDays: number;
     };
+}
+export type PersonalMakeupMode = 'makeup' | 'overtime' | 'submitted';
+export interface PersonalMakeupApplication {
+    kind: 'makeup' | 'overtime';
+    overtimeDate: string;
+    reason: string;
+    status: 'local-pending';
+    createdAt: string;
+}
+export interface PersonalMakeupItem {
+    attendanceDate: string;
+    mode: PersonalMakeupMode;
+    deadline: string;
+    message: string;
+    application?: PersonalMakeupApplication;
+}
+export interface PersonalMakeupView {
+    configured: boolean;
+    items: PersonalMakeupItem[];
+}
+export interface PersonalMakeupSubmit {
+    attendanceDate: string;
+    overtimeDate?: string;
+    reason?: string;
 }
 export interface DashboardSnapshot {
     status: StatusView;

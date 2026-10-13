@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { AttendanceBridge, BridgeError } from './bridge.js'
 import {
   API_PREFIX, CLIENT_HEADER, CLIENT_NAME,
-  type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type PersonalAccountUpdate, type PersonalAttendanceView, type PersonalAutomationView, type PersonalRosterUpdate, type PersonalRosterView, type PersonalScheduleUpdate, type ReadCommand, type RecentRunView, type RosterTableView, type RosterUpdate, type RosterView, type ScheduleView, type StatusView,
+  type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type PersonalAccountUpdate, type PersonalAttendanceView, type PersonalAutomationView, type PersonalMakeupSubmit, type PersonalMakeupView, type PersonalRosterUpdate, type PersonalRosterView, type PersonalScheduleUpdate, type ReadCommand, type RecentRunView, type RosterTableView, type RosterUpdate, type RosterView, type ScheduleView, type StatusView,
 } from './contracts.js'
 import type { RuntimeContextLike } from './runtime.js'
 
@@ -31,6 +31,9 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, bridge: Atten
   if (path === 'personal-automation' && method === 'GET') {
     return sendJson(res, 200, await bridge.read<PersonalAutomationView>('personal-automation-read'))
   }
+  if (path === 'personal-makeup' && method === 'GET') {
+    return sendJson(res, 200, await bridge.read<PersonalMakeupView>('personal-makeup-read'))
+  }
   if (path === 'roster' && method === 'GET') {
     return sendJson(res, 200, await bridge.read<RosterTableView>('roster-read'))
   }
@@ -51,6 +54,10 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, bridge: Atten
   if (path === 'personal-schedule' && method === 'PUT') {
     const settings = validatePersonalScheduleUpdate(await readJsonBody(req))
     return sendJson(res, 200, await bridge.updatePersonalSchedule(settings))
+  }
+  if (path === 'personal-makeup' && method === 'POST') {
+    const settings = validatePersonalMakeupSubmit(await readJsonBody(req))
+    return sendJson(res, 201, await bridge.submitPersonalMakeup(settings))
   }
   if (path === 'roster' && method === 'PUT') {
     const settings = validateRosterUpdate(await readJsonBody(req, 512 * 1024))
@@ -124,6 +131,17 @@ function validatePersonalScheduleUpdate(value: unknown): PersonalScheduleUpdate 
   if (times.some(value => !/^(?:[01]\d|2[0-3]):[0-5]\d$/u.test(value))) throw httpError(400, '巡检时间必须使用 HH:MM 格式。')
   if (record.enabled && times.length === 0) throw httpError(400, '启用定时巡检时至少需要一个时间。')
   return { enabled: record.enabled, times }
+}
+
+function validatePersonalMakeupSubmit(value: unknown): PersonalMakeupSubmit {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw httpError(400, '补卡申请格式无效。')
+  const record = value as Record<string, unknown>
+  const allowed = new Set(['attendanceDate', 'overtimeDate', 'reason'])
+  if (Object.keys(record).some(key => !allowed.has(key)) || typeof record.attendanceDate !== 'string') throw httpError(400, '补卡申请格式无效。')
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(record.attendanceDate)) throw httpError(400, '缺卡日期格式无效。')
+  if (record.overtimeDate !== undefined && (typeof record.overtimeDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/u.test(record.overtimeDate))) throw httpError(400, '加班日期格式无效。')
+  if (record.reason !== undefined && (typeof record.reason !== 'string' || record.reason.length > 300)) throw httpError(400, '补卡说明不能超过 300 个字符。')
+  return { attendanceDate: record.attendanceDate, ...(record.overtimeDate === undefined ? {} : { overtimeDate: record.overtimeDate }), ...(record.reason === undefined ? {} : { reason: record.reason }) }
 }
 
 function validateRosterRow(value: unknown): RosterUpdate['rows'][number] {
