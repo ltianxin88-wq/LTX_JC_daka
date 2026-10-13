@@ -1,15 +1,18 @@
 import Schema from '@deepseek-ai/schemastery';
 export interface Config {
-    backendRoot: string;
+    dataRoot: string;
+    legacyImportRoot: string;
     pythonPath: string;
     bridgeTimeoutMs: number;
 }
 export declare const Config: Schema<Schemastery.ObjectS<NoInfer<{
-    backendRoot: Schema<string, string, "defined">;
+    dataRoot: Schema<string, string, "defined">;
+    legacyImportRoot: Schema<string, string, "defined">;
     pythonPath: Schema<string, string, "defined">;
     bridgeTimeoutMs: Schema<number, number, "defined">;
 }>>, Schemastery.ObjectT<NoInfer<{
-    backendRoot: Schema<string, string, "defined">;
+    dataRoot: Schema<string, string, "defined">;
+    legacyImportRoot: Schema<string, string, "defined">;
     pythonPath: Schema<string, string, "defined">;
     bridgeTimeoutMs: Schema<number, number, "defined">;
 }>>, "plain">;

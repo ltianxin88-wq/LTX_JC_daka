@@ -18,7 +18,7 @@ export interface StatusView {
     application: {
         name: string;
         version: string;
-        backendRootAvailable: boolean;
+        dataRootAvailable: boolean;
     };
     configuration: {
         fileAvailable: boolean;
