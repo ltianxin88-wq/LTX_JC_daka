@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { AttendanceBridge, BridgeError } from './bridge.js'
 import {
   API_PREFIX, CLIENT_HEADER, CLIENT_NAME,
-  type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type PersonalAttendanceView, type ReadCommand, type RecentRunView, type RosterView, type ScheduleView, type StatusView,
+  type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type PersonalAccountUpdate, type PersonalAttendanceView, type ReadCommand, type RecentRunView, type RosterView, type ScheduleView, type StatusView,
 } from './contracts.js'
 import type { RuntimeContextLike } from './runtime.js'
 
@@ -31,6 +31,10 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, bridge: Atten
   if (path === 'configuration' && method === 'PUT') {
     const settings = validateConfigurationUpdate(await readJsonBody(req))
     return sendJson(res, 200, await bridge.updateConfiguration(settings))
+  }
+  if (path === 'personal-account' && method === 'PUT') {
+    const settings = validatePersonalAccountUpdate(await readJsonBody(req))
+    return sendJson(res, 200, await bridge.updatePersonalAccount(settings))
   }
   if (method !== 'GET') throw httpError(405, '该考勤接口不支持此请求方式。')
   if (path === 'health') return sendJson(res, 200, { ok: true, mode: 'read-only', service: 'iepms-attendance-plugin' })
@@ -75,6 +79,16 @@ function validateConfigurationUpdate(value: unknown): ConfigurationUpdate {
     if (record[key] !== undefined && typeof record[key] !== 'boolean') throw httpError(400, `${key} 必须是布尔值。`)
   }
   return record as ConfigurationUpdate
+}
+
+function validatePersonalAccountUpdate(value: unknown): PersonalAccountUpdate {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw httpError(400, '个人账号配置无效。')
+  const record = value as Record<string, unknown>
+  if (Object.keys(record).length !== 1 || typeof record.account !== 'string') throw httpError(400, '个人版只接受一个账号字段。')
+  const account = record.account.trim()
+  if (!account) throw httpError(400, '请填写个人考勤账号。')
+  if (account.length > 100 || !/^[A-Za-z0-9_.@-]+$/u.test(account)) throw httpError(400, '个人账号只能包含字母、数字及 . _ @ -。')
+  return { account }
 }
 
 function assertBrowserRequest(req: IncomingMessage): void {

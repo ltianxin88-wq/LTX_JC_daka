@@ -2,7 +2,7 @@
 
 `iepms-attendance-plugin` adds a local attendance-monitoring and secure configuration panel to DeepSeek Harness.
 
-Version 0.3 provides two switchable views. The management view reads sanitized health, roster aggregate, schedule state and recent status from `D:\dingding\daka`, and can update the local iEPMS account, browser channel, overnight-attendance policy and DingTalk Webhook from an explicit user form. The personal view filters the latest local result to the configured account and presents daily status, a monthly calendar, monthly statistics and recent punches. Saving settings or switching views does not run login, attendance checks, task changes, exports or DingTalk delivery.
+Version 0.3 provides two switchable views. The management view reads sanitized health, roster aggregate, schedule state and recent status from `D:\dingding\daka`, and can update the local iEPMS account, browser channel, overnight-attendance policy and DingTalk Webhook from an explicit user form. The personal view has its own single-field account setting, independent from the management login, and uses it only to filter the latest local result before presenting daily status, a monthly calendar, monthly statistics and recent punches. Saving settings or switching views does not run login, attendance checks, task changes, exports or DingTalk delivery.
 
 Passwords remain in Windows Credential Manager / DPAPI and are never written to `config.json` or returned to DSH. Webhook values are written to the existing local configuration for backward compatibility but are never echoed to the browser. The plugin API returns only configured/not-configured state and a masked account identifier.
 

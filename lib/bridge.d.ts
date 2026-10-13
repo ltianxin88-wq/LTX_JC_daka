@@ -1,11 +1,12 @@
 import type { Config } from './config.js';
-import type { ConfigurationUpdate, ConfigurationView, ReadCommand } from './contracts.js';
+import type { ConfigurationUpdate, ConfigurationView, PersonalAccountUpdate, PersonalAttendanceView, ReadCommand } from './contracts.js';
 export declare class AttendanceBridge {
     private readonly config;
     readonly bridgePath: string;
     constructor(config: Config);
     read<T>(command: ReadCommand): Promise<T>;
     updateConfiguration(settings: ConfigurationUpdate): Promise<ConfigurationView>;
+    updatePersonalAccount(settings: PersonalAccountUpdate): Promise<PersonalAttendanceView>;
     private invoke;
 }
 export declare class BridgeError extends Error {

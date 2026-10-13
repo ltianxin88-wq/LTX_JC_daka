@@ -167,7 +167,7 @@ function AttendancePanel({ workspace }: { workspace?: WorkspaceController }) {
     />}
     {view === 'personal' && (personalState === 'idle' || personalState === 'loading') && <PersonalSkeleton />}
     {view === 'personal' && personalState === 'error' && <PanelState title="暂时无法读取个人考勤" text={personalError} retry={() => { void loadPersonal() }} />}
-    {view === 'personal' && personalState === 'ready' && personal !== undefined && <PersonalDashboard value={personal} openSettings={() => { setView('management') }} />}
+    {view === 'personal' && personalState === 'ready' && personal !== undefined && <PersonalDashboard value={personal} onAccountSaved={setPersonal} />}
   </section>
 }
 
@@ -201,7 +201,7 @@ function Dashboard({ snapshot, configuration, onConfigurationSaved }: { snapshot
   </div>
 }
 
-function PersonalDashboard({ value, openSettings }: { value: PersonalAttendanceView; openSettings: () => void }) {
+function PersonalDashboard({ value, onAccountSaved }: { value: PersonalAttendanceView; onAccountSaved: (value: PersonalAttendanceView) => void }) {
   const today = new Date()
   const currentMonth = monthKey(today)
   const [selectedMonth, setSelectedMonth] = useState(currentMonth)
@@ -218,8 +218,8 @@ function PersonalDashboard({ value, openSettings }: { value: PersonalAttendanceV
   const anomalyCount = late + early + missing
   const recent = [...value.records].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8)
   return <div className="iepms-personal-content">
-    {!value.configured ? <div className="iepms-personal-notice is-warning"><IconUserOutline16 size={15} /><span>尚未配置个人工号，当前显示空数据布局。</span><button type="button" onClick={openSettings}>前往配置</button></div>
-      : !value.source.latestAvailable && <div className="iepms-personal-notice"><IconDataOutline16 size={15} /><span>暂无个人考勤数据。完成一次巡检后，个人版会从本地结果中整理记录。</span></div>}
+    <PersonalAccountEditor value={value} onSaved={onAccountSaved} />
+    {value.configured && !value.source.latestAvailable && <div className="iepms-personal-notice"><IconDataOutline16 size={15} /><span>暂无该账号的考勤数据。完成一次巡检后，个人版会从本地结果中整理记录。</span></div>}
     <section className="iepms-personal-metrics" aria-label="个人考勤概览">
       <PersonalMetric icon={<IconAlarmClockOutline16 size={17} />} label="今日状态" value={todayRecord === undefined ? '暂无记录' : personalStatusLabel(todayRecord.status)} detail={todayRecord === undefined ? '等待本地巡检数据' : `上班 ${todayRecord.clockIn || '-'} / 下班 ${todayRecord.clockOut || '-'}`} tone={statusTone(todayRecord?.status)} />
       <PersonalMetric icon={<IconGaugeOutline16 size={17} />} label="本月出勤" value={`${attendanceDays}天`} detail={`工作日估算 ${expectedDays} 天`} tone="blue" />
@@ -249,6 +249,51 @@ function PersonalDashboard({ value, openSettings }: { value: PersonalAttendanceV
       {recent.length === 0 ? <Empty text="暂无本地个人记录。巡检生成当日明细后会显示在这里。" /> : <div className="iepms-personal-table-wrap"><table><thead><tr><th>日期</th><th>上班时间</th><th>下班时间</th><th>工时</th><th>状态</th></tr></thead><tbody>{recent.map(record => <tr key={record.date}><td>{record.date.slice(5)}</td><td>{record.clockIn || '-'}</td><td>{record.clockOut || '-'}</td><td>{formatWorkMinutes(record.workMinutes)}</td><td><strong className={`is-${record.status}`}>{personalStatusLabel(record.status)}</strong></td></tr>)}</tbody></table></div>}
     </section>
   </div>
+}
+
+function PersonalAccountEditor({ value, onSaved }: { value: PersonalAttendanceView; onSaved: (value: PersonalAttendanceView) => void }) {
+  const [editing, setEditing] = useState(!value.configured)
+  const [account, setAccount] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState<{ kind: 'success' | 'error'; text: string }>()
+  useEffect(() => { if (!value.configured) setEditing(true) }, [value.configured])
+  const save = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault()
+    const normalized = account.trim()
+    if (!normalized) return setMessage({ kind: 'error', text: '请填写个人考勤账号。' })
+    setSaving(true)
+    setMessage(undefined)
+    try {
+      const next = await requestApi<PersonalAttendanceView>('personal-account', {
+        method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ account: normalized }),
+      })
+      if (!isPersonalAttendance(next)) throw new Error('个人账号服务返回了无效数据。')
+      setAccount('')
+      setEditing(false)
+      setMessage({ kind: 'success', text: '个人账号已保存，已重新匹配本地考勤记录。' })
+      onSaved(next)
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : '个人账号保存失败。' })
+    } finally { setSaving(false) }
+  }
+  if (!editing && value.configured) return <section className="iepms-personal-account is-configured" aria-label="个人账号设置">
+    <IconUserOutline16 size={16} />
+    <div><strong>个人考勤账号</strong><span>已配置 {value.accountMasked} · 仅用于匹配本地巡检结果</span></div>
+    {message !== undefined && <p className={`is-${message.kind}`} role="status">{message.text}</p>}
+    <button type="button" onClick={() => { setEditing(true); setMessage(undefined) }}>更换账号</button>
+  </section>
+  return <section className="iepms-personal-account" aria-label="个人账号设置">
+    <div className="iepms-personal-account-intro"><IconUserOutline16 size={17} /><span><strong>{value.configured ? '更换个人考勤账号' : '配置个人考勤账号'}</strong><small>只需填写账号，用于匹配本地巡检结果，不参与登录。</small></span></div>
+    <form onSubmit={event => { void save(event) }}>
+      <label htmlFor="iepms-personal-account-input">个人账号</label>
+      <input id="iepms-personal-account-input" autoComplete="username" maxLength={100} value={account} onChange={event => { setAccount(event.target.value) }} placeholder={value.configured ? `当前：${value.accountMasked}` : '请输入工号或打卡账号'} autoFocus={!value.configured} />
+      <div className="iepms-personal-account-actions">
+        {value.configured && <button type="button" className="is-secondary" onClick={() => { setEditing(false); setAccount(''); setMessage(undefined) }}>取消</button>}
+        <button type="submit" disabled={saving}>{saving ? '保存中…' : '保存账号'}</button>
+      </div>
+    </form>
+    {message !== undefined && <p className={`iepms-personal-account-message is-${message.kind}`} role="alert">{message.text}</p>}
+  </section>
 }
 
 function PersonalMetric({ icon, label, value, detail, tone }: { icon: React.ReactNode; label: string; value: string; detail: string; tone: 'blue' | 'green' | 'orange' | 'muted' }) {

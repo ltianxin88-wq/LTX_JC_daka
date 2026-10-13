@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Config } from './config.js'
-import type { BridgeCommand, BridgeResponse, ConfigurationUpdate, ConfigurationView, ReadCommand } from './contracts.js'
+import type { BridgeCommand, BridgeResponse, ConfigurationUpdate, ConfigurationView, PersonalAccountUpdate, PersonalAttendanceView, ReadCommand } from './contracts.js'
 
 const MAX_STDOUT_BYTES = 256 * 1024
 const MAX_STDERR_BYTES = 16 * 1024
@@ -36,7 +36,16 @@ export class AttendanceBridge {
     return response.data as ConfigurationView
   }
 
-  private invoke(command: BridgeCommand, settings?: ConfigurationUpdate): Promise<BridgeResponse<unknown>> {
+  async updatePersonalAccount(settings: PersonalAccountUpdate): Promise<PersonalAttendanceView> {
+    if (!existsSync(this.bridgePath)) throw new BridgeError('BACKEND_UNAVAILABLE', '未找到 iEPMS 本地桥接程序。')
+    const response = await this.invoke('personal-account-update', settings)
+    if (!response.ok || response.data === undefined) {
+      throw new BridgeError(response.error?.code ?? 'BRIDGE_FAILED', response.error?.message ?? '个人账号保存失败。')
+    }
+    return response.data as PersonalAttendanceView
+  }
+
+  private invoke(command: BridgeCommand, settings?: ConfigurationUpdate | PersonalAccountUpdate): Promise<BridgeResponse<unknown>> {
     return new Promise((resolveResult, reject) => {
       const child = spawn(this.config.pythonPath, [this.bridgePath], {
         cwd: this.config.backendRoot,

@@ -3,7 +3,7 @@ export declare const API_PREFIX = "/iepms-attendance-local/v1";
 export declare const CLIENT_HEADER = "x-iepms-attendance-client";
 export declare const CLIENT_NAME = "dashboard-web";
 export type ReadCommand = 'status' | 'roster-summary' | 'recent-runs' | 'schedule-status' | 'configuration-read' | 'personal-attendance';
-export type BridgeCommand = ReadCommand | 'configuration-update';
+export type BridgeCommand = ReadCommand | 'configuration-update' | 'personal-account-update';
 export interface BridgeResponse<T> {
     ok: boolean;
     schemaVersion: 1;
@@ -72,6 +72,9 @@ export interface ConfigurationUpdate {
     browserChannel?: ConfigurationView['browserChannel'];
     overnightExemptAttendance?: boolean;
     overnightCheckWorkHours?: boolean;
+}
+export interface PersonalAccountUpdate {
+    account: string;
 }
 export type PersonalAttendanceStatus = 'normal' | 'late' | 'early' | 'missing' | 'checked-in' | 'pending';
 export interface PersonalAttendanceRecord {

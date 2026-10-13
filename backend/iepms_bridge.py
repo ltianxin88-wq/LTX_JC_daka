@@ -33,7 +33,7 @@ if hasattr(sys.stdout, "reconfigure"):
 SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 16 * 1024
 READ_COMMANDS = {"status", "roster-summary", "recent-runs", "schedule-status", "configuration-read", "personal-attendance"}
-WRITE_COMMANDS = {"configuration-update"}
+WRITE_COMMANDS = {"configuration-update", "personal-account-update"}
 ALLOWED_COMMANDS = READ_COMMANDS | WRITE_COMMANDS
 SCRIPT_ROOT = Path(__file__).resolve().parent
 ROOT = Path(os.environ.get("IEPMS_BACKEND_ROOT", str(SCRIPT_ROOT))).resolve()
@@ -234,6 +234,26 @@ def update_configuration(settings: dict[str, Any]) -> dict[str, Any]:
     return configuration_view(config)
 
 
+def update_personal_account(settings: dict[str, Any]) -> dict[str, Any]:
+    if set(settings) != {"account"} or not isinstance(settings.get("account"), str):
+        raise BridgeInputError("个人版只接受一个账号字段。")
+    account = normalize_account(settings["account"])
+    if not account:
+        raise BridgeInputError("请填写个人考勤账号。")
+    if len(account) > 100 or not re.fullmatch(r"[A-Za-z0-9_.@-]+", account):
+        raise BridgeInputError("个人账号只能包含字母、数字及 . _ @ -。")
+    config, valid = read_config()
+    if CONFIG_FILE.exists() and not valid:
+        raise BridgeInputError("现有 config.json 无效，已拒绝覆盖。")
+    previous = normalize_account(config.get("personal_account"))
+    config["personal_account"] = account
+    write_config_atomic(config)
+    if previous != account:
+        account_hash = hashlib.sha256(account.encode("utf-8")).hexdigest()
+        write_json_atomic(PERSONAL_HISTORY_FILE, {"schemaVersion": 1, "accountHash": account_hash, "records": []})
+    return personal_attendance()
+
+
 def normalize_account(value: Any) -> str:
     account = str(value or "").strip()
     return account[:-2] if account.endswith(".0") else account
@@ -272,7 +292,7 @@ def sanitize_personal_record(value: Any) -> dict[str, Any] | None:
 
 
 def personal_record_from_latest(config: dict[str, Any]) -> dict[str, Any] | None:
-    username = normalize_account(config.get("username"))
+    username = normalize_account(config.get("personal_account"))
     if not username or not LAST_DATA_FILE.exists():
         return None
     try:
@@ -339,7 +359,7 @@ def read_personal_history(account_hash: str) -> list[dict[str, Any]]:
 def personal_attendance() -> dict[str, Any]:
     import keyring_utils
     config, valid = read_config()
-    username = normalize_account(config.get("username")) if valid else ""
+    username = normalize_account(config.get("personal_account")) if valid else ""
     if not username:
         return {"configured": False, "accountMasked": "", "records": [], "source": {"latestAvailable": LAST_DATA_FILE.exists(), "historyDays": 0}}
     account_hash = hashlib.sha256(username.encode("utf-8")).hexdigest()
@@ -470,6 +490,7 @@ def main() -> int:
             "configuration-read": configuration_view,
             "personal-attendance": personal_attendance,
             "configuration-update": lambda: update_configuration(settings or {}),
+            "personal-account-update": lambda: update_personal_account(settings or {}),
         }
         return emit(command, data=handlers[command]())
     except BridgeInputError as exc:

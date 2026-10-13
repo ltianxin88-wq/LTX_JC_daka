@@ -93,10 +93,10 @@ test('configuration update writes only non-secret settings and returns a sanitiz
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
-test('personal attendance returns only the configured account sanitized record', async () => {
+test('personal attendance uses its independent account and returns only a sanitized record', async () => {
   const root = await mkdtemp(join(tmpdir(), 'iepms-personal-'))
   try {
-    await writeFile(join(root, 'config.json'), JSON.stringify({ username: 'test.user' }), 'utf8')
+    await writeFile(join(root, 'config.json'), JSON.stringify({ username: 'manager.user', personal_account: 'test.user' }), 'utf8')
     await writeFile(join(root, 'keyring_utils.py'), [
       'def get_password(username): return "stored"',
       'def mask_account(username): return "te****er"',
@@ -121,6 +121,41 @@ test('personal attendance returns only the configured account sanitized record',
     for (const secret of ['Target Person', 'Other Person', 'Private Project', 'Other Project', 'test.user', 'other.user']) assert.equal(serialized.includes(secret), false)
     const history = await readFile(join(root, '.personal_attendance_history.json'), 'utf8')
     assert.equal(history.includes('test.user'), false)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('personal account update stores only the independent account and returns a sanitized view', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'iepms-personal-config-'))
+  try {
+    await writeFile(join(root, 'config.json'), JSON.stringify({ username: 'manager.user' }), 'utf8')
+    await writeFile(join(root, 'keyring_utils.py'), [
+      'def get_password(username): return "stored"',
+      'def mask_account(username): return username[:2] + "***" if username else ""',
+    ].join('\n'), 'utf8')
+    const value = await invoke({ version: 1, command: 'personal-account-update', settings: { account: 'employee.001' } }, root)
+    assert.equal(value.ok, true)
+    assert.equal(value.data.configured, true)
+    assert.equal(value.data.accountMasked, 'em***')
+    assert.equal(JSON.stringify(value).includes('employee.001'), false)
+    const stored = JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))
+    assert.equal(stored.username, 'manager.user')
+    assert.equal(stored.personal_account, 'employee.001')
+    const history = await readFile(join(root, '.personal_attendance_history.json'), 'utf8')
+    assert.equal(history.includes('employee.001'), false)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('personal account update rejects extra fields', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'iepms-personal-invalid-'))
+  try {
+    await writeFile(join(root, 'config.json'), '{}', 'utf8')
+    try {
+      await invoke({ version: 1, command: 'personal-account-update', settings: { account: 'employee.001', password: 'forbidden' } }, root)
+      assert.fail('personal account update must reject extra fields')
+    } catch (error) {
+      assert.equal(error.value.ok, false)
+      assert.equal(error.value.error.code, 'INVALID_CONFIGURATION')
+    }
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
