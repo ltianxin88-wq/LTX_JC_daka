@@ -21,7 +21,7 @@ import {
 import {
   API_PREFIX, CLIENT_HEADER, CLIENT_NAME, PLUGIN_ID,
   type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot,
-  type PersonalAttendanceRecord, type PersonalAttendanceStatus, type PersonalAttendanceView, type PersonalAutomationView, type PersonalMakeupItem, type PersonalMakeupView, type PersonalRosterView,
+  type PersonalAttendanceRecord, type PersonalAttendanceStatus, type PersonalAttendanceView, type PersonalAutomationView, type PersonalMakeupView, type PersonalRosterView,
   type RosterRow, type RosterTableView,
 } from './contracts.js'
 import { activatePluginWorkspace, observePluginWorkspace } from './workspace-ownership.js'
@@ -188,7 +188,6 @@ function AttendancePanel({ workspace }: { workspace?: WorkspaceController }) {
         onAccountSaved={next => { setPersonal(next); void loadPersonal(true) }}
         onAutomationChanged={setPersonalAutomation}
         makeup={personalMakeup}
-        onMakeupChanged={setPersonalMakeup}
       />}
     </div>
   </section>
@@ -225,15 +224,12 @@ function Dashboard({ snapshot, configuration, onConfigurationSaved }: { snapshot
   </div>
 }
 
-function PersonalDashboard({ value, automation, makeup, onAccountSaved, onAutomationChanged, onMakeupChanged }: { value: PersonalAttendanceView; automation: PersonalAutomationView; makeup: PersonalMakeupView; onAccountSaved: (value: PersonalAttendanceView) => void; onAutomationChanged: (value: PersonalAutomationView) => void; onMakeupChanged: (value: PersonalMakeupView) => void }) {
+function PersonalDashboard({ value, automation, makeup, onAccountSaved, onAutomationChanged }: { value: PersonalAttendanceView; automation: PersonalAutomationView; makeup: PersonalMakeupView; onAccountSaved: (value: PersonalAttendanceView) => void; onAutomationChanged: (value: PersonalAutomationView) => void }) {
   const today = new Date()
   const currentMonth = monthKey(today)
   const [selectedMonth, setSelectedMonth] = useState(currentMonth)
-  const [selectedMakeupDate, setSelectedMakeupDate] = useState<string>()
   const records = value.records.filter(record => record.date.startsWith(`${selectedMonth}-`))
   const recordByDate = new Map(records.map(record => [record.date, record]))
-  const makeupByDate = new Map(makeup.items.map(item => [item.attendanceDate, item]))
-  const selectedMakeup = selectedMakeupDate === undefined ? undefined : makeupByDate.get(selectedMakeupDate)
   const todayRecord = value.records.find(record => record.date === dateKey(today))
   const attendanceDays = records.filter(record => record.status !== 'missing' && record.status !== 'pending').length
   const normalPunches = records.filter(record => record.status === 'normal' || record.status === 'checked-in').reduce((total, record) => total + Number(Boolean(record.clockIn)) + Number(Boolean(record.clockOut)), 0)
@@ -261,16 +257,13 @@ function PersonalDashboard({ value, automation, makeup, onAccountSaved, onAutoma
         <div className="iepms-calendar-days">{calendarCells(selectedMonth).map(cell => {
           const record = recordByDate.get(cell.date)
           const isToday = cell.date === dateKey(today)
-          const makeupItem = record?.status === 'missing' ? makeupByDate.get(cell.date) : undefined
-          const className = `iepms-calendar-day${cell.inMonth ? '' : ' is-outside'}${isToday ? ' is-today' : ''}${makeupItem === undefined ? '' : ' is-actionable'}${selectedMakeupDate === cell.date ? ' is-selected' : ''}`
-          const content = <><span>{cell.day}</span>{record !== undefined && <i className={`is-${record.status}`} aria-label={personalStatusLabel(record.status)} />}{makeupItem !== undefined && <b>{makeupItem.mode === 'submitted' ? '已申请' : '补卡'}</b>}</>
-          return makeupItem === undefined
-            ? <div key={cell.date} className={className} title={record === undefined ? cell.date : `${cell.date} ${personalStatusLabel(record.status)}`}>{content}</div>
-            : <button key={cell.date} type="button" className={className} onClick={() => { setSelectedMakeupDate(cell.date) }} aria-pressed={selectedMakeupDate === cell.date} title={`${cell.date} 缺卡，${makeupItem.mode === 'submitted' ? '查看已申请记录' : '申请补卡'}`}>{content}</button>
+          const reminder = record?.status === 'missing' ? undefined : makeupReminderForDate(cell.date, makeup, dateKey(today))
+          const className = `iepms-calendar-day${cell.inMonth ? '' : ' is-outside'}${isToday ? ' is-today' : ''}${reminder === undefined ? '' : ` is-${reminder}-reminder`}`
+          const label = record?.status === 'missing' ? '缺卡' : reminder === 'makeup' ? '可补卡' : reminder === 'overtime' ? '可加班补卡' : undefined
+          return <div key={cell.date} className={className} title={label === undefined ? record === undefined ? cell.date : `${cell.date} ${personalStatusLabel(record.status)}` : `${cell.date} ${label}`}><span>{cell.day}</span>{record !== undefined && <i className={`is-${record.status}`} aria-label={personalStatusLabel(record.status)} />}{label !== undefined && <b>{label}</b>}</div>
         })}</div>
         <div className="iepms-calendar-legend"><span><i className="is-normal" />正常</span><span><i className="is-late" />迟到/早退</span><span><i className="is-missing" />缺卡</span><span><i className="is-pending" />进行中</span></div>
-        <div className="iepms-calendar-makeup-legend" aria-label="补卡申请图例"><strong>补卡申请</strong><span><i className="is-makeup" />缺卡日期可点击补卡</span><span><i className="is-overtime" />超过 72 小时申请加班补卡</span><span><i className="is-submitted" />已申请可查看登记状态</span></div>
-        {selectedMakeup !== undefined && <section className="iepms-calendar-makeup" aria-label={`${selectedMakeup.attendanceDate} 补卡申请`}><header><span>{selectedMakeup.attendanceDate}</span><strong>{selectedMakeup.mode === 'overtime' ? '加班补卡' : selectedMakeup.mode === 'submitted' ? '已登记申请' : '补卡申请'}</strong><button type="button" onClick={() => { setSelectedMakeupDate(undefined) }} aria-label="关闭补卡申请">关闭</button></header><PersonalMakeupItemForm item={selectedMakeup} onChanged={onMakeupChanged} /></section>}
+        <div className="iepms-calendar-makeup-legend" aria-label="补卡提醒图例"><strong>补卡提醒：</strong><span><i className="is-makeup" />可补卡</span><span><i className="is-overtime" />可加班补卡</span><small>缺卡后 72 小时内可补卡；超过 72 小时显示加班补卡提醒。</small></div>
       </section>
       <section className="iepms-personal-card iepms-personal-stats"><header><IconGaugeOutline16 size={16} /><h2>月度考勤统计</h2></header>
         <StatRow label="出勤天数" value={`${attendanceDays}天`} amount={expectedDays === 0 ? 0 : attendanceDays / expectedDays} detail={`${attendanceDays} / ${expectedDays}`} tone="blue" />
@@ -285,41 +278,6 @@ function PersonalDashboard({ value, automation, makeup, onAccountSaved, onAutoma
       {recent.length === 0 ? <Empty text="暂无本地个人记录。巡检生成当日明细后会显示在这里。" /> : <div className="iepms-personal-table-wrap"><table><thead><tr><th>日期</th><th>上班时间</th><th>下班时间</th><th>工时</th><th>状态</th></tr></thead><tbody>{recent.map(record => <tr key={record.date}><td>{record.date.slice(5)}</td><td>{record.clockIn || '-'}</td><td>{record.clockOut || '-'}</td><td>{formatWorkMinutes(record.workMinutes)}</td><td><strong className={`is-${record.status}`}>{personalStatusLabel(record.status)}</strong></td></tr>)}</tbody></table></div>}
     </section>
   </div>
-}
-
-function PersonalMakeupItemForm({ item, onChanged }: { item: PersonalMakeupItem; onChanged: (value: PersonalMakeupView) => void }) {
-  const [overtimeDate, setOvertimeDate] = useState('')
-  const [reason, setReason] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [message, setMessage] = useState('')
-  const submitted = item.mode === 'submitted'
-  const overtime = item.mode === 'overtime'
-  const submit = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
-    event.preventDefault()
-    if (overtime && !overtimeDate) return setMessage('请选择非工作日的加班日期。')
-    setSaving(true)
-    setMessage('')
-    try {
-      const next = await requestApi<PersonalMakeupView>('personal-makeup', {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ attendanceDate: item.attendanceDate, ...(overtime ? { overtimeDate } : {}), reason }),
-      })
-      if (!isPersonalMakeup(next)) throw new Error('补卡申请服务返回了无效数据。')
-      onChanged(next)
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : '补卡申请保存失败。')
-    } finally { setSaving(false) }
-  }
-  if (submitted) return <article className="iepms-personal-makeup-item is-submitted">
-    <div><strong>{item.attendanceDate}</strong><span>{item.application?.kind === 'overtime' ? `加班补卡 · ${item.application.overtimeDate}` : '补卡'}</span></div>
-    <p>{item.message}</p><small>登记时间 {item.application?.createdAt.replace('T', ' ')}</small>
-  </article>
-  return <form className="iepms-personal-makeup-item" onSubmit={event => { void submit(event) }}>
-    <div className="iepms-personal-makeup-meta"><strong>{item.attendanceDate}</strong><span className={overtime ? 'is-overtime' : 'is-makeup'}>{overtime ? '加班补卡' : '补卡'}</span><p>{item.message}</p></div>
-    {overtime && <label>加班日期<input type="date" value={overtimeDate} max={dateKey(new Date())} onChange={event => { setOvertimeDate(event.target.value); setMessage('') }} required /></label>}
-    <label className="is-reason">说明<input value={reason} maxLength={300} placeholder="选填" onChange={event => { setReason(event.target.value); setMessage('') }} /></label>
-    <div className="iepms-personal-makeup-actions"><button type="submit" disabled={saving}>{saving ? '保存中…' : overtime ? '申请加班补卡' : '申请补卡'}</button>{message && <small role="alert">{message}</small>}</div>
-  </form>
 }
 
 function PersonalAccountEditor({ value, onSaved }: { value: PersonalAttendanceView; onSaved: (value: PersonalAttendanceView) => void }) {
@@ -670,6 +628,15 @@ function isPersonalRoster(value: unknown): value is PersonalRosterView {
 }
 
 function dateKey(value: Date): string { return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}` }
+function makeupReminderForDate(date: string, makeup: PersonalMakeupView, today: string): 'makeup' | 'overtime' | undefined {
+  let overtimeAvailable = false
+  for (const item of makeup.items) {
+    const deadlineDate = item.deadline.slice(0, 10)
+    if (date > item.attendanceDate && date <= deadlineDate) return 'makeup'
+    if (item.mode === 'overtime' && date > deadlineDate && date <= today) overtimeAvailable = true
+  }
+  return overtimeAvailable ? 'overtime' : undefined
+}
 function monthKey(value: Date): string { return dateKey(value).slice(0, 7) }
 function parseMonth(value: string): [number, number] {
   const match = /^(\d{4})-(\d{2})$/u.exec(value)
