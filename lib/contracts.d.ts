@@ -2,8 +2,8 @@ export declare const PLUGIN_ID = "iepms-attendance-plugin";
 export declare const API_PREFIX = "/iepms-attendance-local/v1";
 export declare const CLIENT_HEADER = "x-iepms-attendance-client";
 export declare const CLIENT_NAME = "dashboard-web";
-export type ReadCommand = 'status' | 'roster-summary' | 'recent-runs' | 'schedule-status' | 'configuration-read' | 'personal-attendance';
-export type BridgeCommand = ReadCommand | 'configuration-update' | 'personal-account-update';
+export type ReadCommand = 'status' | 'roster-summary' | 'recent-runs' | 'schedule-status' | 'configuration-read' | 'personal-attendance' | 'personal-automation-read';
+export type BridgeCommand = ReadCommand | 'configuration-update' | 'personal-account-update' | 'personal-run-start' | 'personal-schedule-update';
 export interface BridgeResponse<T> {
     ok: boolean;
     schemaVersion: 1;
@@ -75,6 +75,22 @@ export interface ConfigurationUpdate {
 }
 export interface PersonalAccountUpdate {
     account: string;
+}
+export interface PersonalScheduleUpdate {
+    enabled: boolean;
+    times: string[];
+}
+export interface PersonalAutomationView {
+    state: 'idle' | 'running' | 'success' | 'error';
+    lastRunAt: string;
+    lastCompletedAt: string;
+    message: string;
+    accountConfigured: boolean;
+    loginReady: boolean;
+    schedule: {
+        enabled: boolean;
+        times: string[];
+    };
 }
 export type PersonalAttendanceStatus = 'normal' | 'late' | 'early' | 'missing' | 'checked-in' | 'pending';
 export interface PersonalAttendanceRecord {

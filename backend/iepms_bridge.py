@@ -16,8 +16,9 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import redirect_stdout
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -32,8 +33,8 @@ if hasattr(sys.stdout, "reconfigure"):
 
 SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 16 * 1024
-READ_COMMANDS = {"status", "roster-summary", "recent-runs", "schedule-status", "configuration-read", "personal-attendance"}
-WRITE_COMMANDS = {"configuration-update", "personal-account-update"}
+READ_COMMANDS = {"status", "roster-summary", "recent-runs", "schedule-status", "configuration-read", "personal-attendance", "personal-automation-read"}
+WRITE_COMMANDS = {"configuration-update", "personal-account-update", "personal-run-start", "personal-schedule-update"}
 ALLOWED_COMMANDS = READ_COMMANDS | WRITE_COMMANDS
 SCRIPT_ROOT = Path(__file__).resolve().parent
 ROOT = Path(os.environ.get("IEPMS_BACKEND_ROOT", str(SCRIPT_ROOT))).resolve()
@@ -44,6 +45,8 @@ ROSTER_FILE = ROOT / "roster.xlsx"
 LOG_FILE = ROOT / "run_log.txt"
 LAST_DATA_FILE = ROOT / "last_attendance_data.json"
 PERSONAL_HISTORY_FILE = ROOT / ".personal_attendance_history.json"
+PERSONAL_RUN_FILE = ROOT / ".personal_attendance_run.json"
+PERSONAL_TASK_PREFIX = "iEPMS_Personal_"
 
 
 def emit(command: str, data: dict[str, Any] | None = None, error: tuple[str, str] | None = None) -> int:
@@ -374,8 +377,299 @@ def personal_attendance() -> dict[str, Any]:
         masked = keyring_utils.mask_account(username)
     return {
         "configured": True, "accountMasked": masked, "records": records,
-        "source": {"latestAvailable": latest is not None, "historyDays": len(records)},
+        "source": {"latestAvailable": bool(records), "historyDays": len(records)},
     }
+
+
+def process_is_running(pid: Any) -> bool:
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        if os.name == "nt":
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", f"Get-Process -Id {pid} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id"],
+                capture_output=True, text=True, timeout=3,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+            )
+            return result.returncode == 0 and result.stdout.strip() == str(pid)
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def read_personal_run_state() -> dict[str, Any]:
+    try:
+        value = json.loads(PERSONAL_RUN_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        value = {}
+    state = str(value.get("state", "idle"))
+    if state not in {"idle", "running", "success", "error"}:
+        state = "idle"
+    pid = value.get("pid")
+    if state == "running" and not process_is_running(pid):
+        state = "error"
+        value["message"] = "上次个人巡检意外中止。"
+        value["completedAt"] = datetime.now().isoformat(timespec="seconds")
+        value["pid"] = None
+        value["state"] = state
+        write_json_atomic(PERSONAL_RUN_FILE, value)
+    return {
+        "state": state,
+        "lastRunAt": str(value.get("startedAt", ""))[:19],
+        "lastCompletedAt": str(value.get("completedAt", ""))[:19],
+        "message": str(value.get("message", ""))[:160],
+    }
+
+
+def personal_login_ready(config: dict[str, Any]) -> bool:
+    import keyring_utils
+    username = normalize_account(config.get("username"))
+    if not username:
+        return False
+    with redirect_stdout(sys.stderr):
+        return bool(keyring_utils.get_password(username))
+
+
+def personal_automation_view() -> dict[str, Any]:
+    config, valid = read_config()
+    personal_account = normalize_account(config.get("personal_account")) if valid else ""
+    times = config.get("personal_schedule_times") if isinstance(config.get("personal_schedule_times"), list) else []
+    times = [str(value) for value in times if re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", str(value))][:4]
+    return {
+        **read_personal_run_state(),
+        "accountConfigured": bool(personal_account),
+        "loginReady": personal_login_ready(config) if valid else False,
+        "schedule": {"enabled": bool(config.get("personal_schedule_enabled", False)), "times": times},
+    }
+
+
+def ensure_personal_run_ready() -> tuple[dict[str, Any], str]:
+    config, valid = read_config()
+    if not valid:
+        raise BridgeInputError("请先完成本地配置。")
+    account = normalize_account(config.get("personal_account"))
+    if not account:
+        raise BridgeInputError("请先配置个人考勤账号。")
+    if not personal_login_ready(config):
+        raise BridgeInputError("请先在管理版配置可用的 iEPMS 登录账号和密码。")
+    if not ROSTER_FILE.exists():
+        raise BridgeInputError("未找到 roster.xlsx，无法定位个人账号所属项目。")
+    return config, account
+
+
+def start_personal_run(settings: dict[str, Any]) -> dict[str, Any]:
+    if settings:
+        raise BridgeInputError("立即巡检不接受额外参数。")
+    ensure_personal_run_ready()
+    current = read_personal_run_state()
+    if current["state"] == "running":
+        raise BridgeInputError("个人巡检正在执行，请等待完成。")
+    started_at = datetime.now().isoformat(timespec="seconds")
+    write_json_atomic(PERSONAL_RUN_FILE, {"schemaVersion": 1, "state": "running", "pid": None, "startedAt": started_at, "completedAt": "", "message": "正在启动个人巡检…"})
+    stable_bridge = ROOT / "iepms_bridge.py"
+    bridge_path = stable_bridge if stable_bridge.exists() else Path(__file__).resolve()
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if os.name == "nt":
+        flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    try:
+        child = subprocess.Popen(
+            [sys.executable, str(bridge_path), "--personal-run"], cwd=str(ROOT),
+            env={**os.environ, "IEPMS_BACKEND_ROOT": str(ROOT), "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=flags,
+        )
+    except Exception as exc:
+        write_json_atomic(PERSONAL_RUN_FILE, {"schemaVersion": 1, "state": "error", "pid": None, "startedAt": started_at, "completedAt": datetime.now().isoformat(timespec="seconds"), "message": "个人巡检启动失败。"})
+        raise BridgeInputError("个人巡检启动失败。") from exc
+    write_json_atomic(PERSONAL_RUN_FILE, {"schemaVersion": 1, "state": "running", "pid": child.pid, "startedAt": started_at, "completedAt": "", "message": "正在同步个人考勤记录…"})
+    return personal_automation_view()
+
+
+def parse_personal_schedule_update(settings: dict[str, Any]) -> tuple[bool, list[str]]:
+    if set(settings) != {"enabled", "times"} or not isinstance(settings.get("enabled"), bool) or not isinstance(settings.get("times"), list):
+        raise BridgeInputError("个人定时配置格式无效。")
+    raw_times = settings["times"]
+    if len(raw_times) > 4 or any(not isinstance(value, str) for value in raw_times):
+        raise BridgeInputError("个人巡检时间最多配置 4 个。")
+    times = list(dict.fromkeys(value.strip() for value in raw_times))
+    if any(re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value) is None for value in times):
+        raise BridgeInputError("巡检时间必须使用 HH:MM 格式。")
+    if settings["enabled"] and not times:
+        raise BridgeInputError("启用定时巡检时至少需要一个时间。")
+    return settings["enabled"], times
+
+
+def powershell_quote(value: Any) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def update_personal_schedule(settings: dict[str, Any]) -> dict[str, Any]:
+    if os.name != "nt":
+        raise BridgeInputError("个人定时巡检仅支持 Windows。")
+    enabled, times = parse_personal_schedule_update(settings)
+    if enabled:
+        config, _ = ensure_personal_run_ready()
+    else:
+        config, valid = read_config()
+        if CONFIG_FILE.exists() and not valid:
+            raise BridgeInputError("本地配置无效。")
+    stable_bridge = ROOT / "iepms_bridge.py"
+    if not stable_bridge.exists():
+        raise BridgeInputError("本地个人巡检程序尚未就绪。")
+    lines = ["$ErrorActionPreference = 'Stop'"]
+    if enabled:
+        lines.extend([
+            "$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name",
+            "$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive",
+            "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 30)",
+            "$settings.StartWhenAvailable = $false",
+        ])
+        argument = f'"{stable_bridge}" --personal-run'
+        task_names = []
+        for index, task_time in enumerate(times, 1):
+            task_name = f"{PERSONAL_TASK_PREFIX}{index}"
+            task_names.append(task_name)
+            lines.extend([
+                f"$action = New-ScheduledTaskAction -Execute {powershell_quote(sys.executable)} -Argument {powershell_quote(argument)} -WorkingDirectory {powershell_quote(ROOT)}",
+                f"$trigger = New-ScheduledTaskTrigger -Daily -At {powershell_quote(task_time)}",
+                f"Register-ScheduledTask -TaskName {powershell_quote(task_name)} -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null",
+            ])
+        keep = ",".join(powershell_quote(name) for name in task_names)
+        lines.extend([
+            f"$keep = @({keep})",
+            f"Get-ScheduledTask -TaskName {powershell_quote(PERSONAL_TASK_PREFIX + '*')} -ErrorAction SilentlyContinue | Where-Object {{ $_.TaskName -notin $keep }} | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue",
+        ])
+    else:
+        lines.append(f"Get-ScheduledTask -TaskName {powershell_quote(PERSONAL_TASK_PREFIX + '*')} -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue")
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "\n".join(lines)],
+        capture_output=True, text=True, timeout=30,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+    )
+    if result.returncode != 0:
+        raise BridgeInputError("个人定时任务更新失败。")
+    config["personal_schedule_enabled"] = enabled
+    config["personal_schedule_times"] = times
+    write_config_atomic(config)
+    return personal_automation_view()
+
+
+def personal_records_from_api(records: list[dict[str, Any]], account: str) -> list[dict[str, Any]]:
+    by_date: dict[str, list[datetime]] = {}
+    for row in records:
+        if not isinstance(row, dict) or normalize_account(row.get("账号")) != account:
+            continue
+        raw_time = str(row.get("考勤时间") or row.get("raw_time") or "").strip()
+        parsed = None
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+            try:
+                parsed = datetime.strptime(raw_time[:19], fmt)
+                break
+            except ValueError:
+                continue
+        if parsed is not None:
+            by_date.setdefault(parsed.strftime("%Y-%m-%d"), []).append(parsed)
+    result = []
+    today = datetime.now().strftime("%Y-%m-%d")
+    for day, values in sorted(by_date.items()):
+        first, last = min(values), max(values)
+        has_pair = last > first
+        minutes = round((last - first).total_seconds() / 60) if has_pair else None
+        state = "normal" if has_pair and minutes is not None and minutes >= 480 else "early" if has_pair else "checked-in" if day == today else "missing"
+        result.append({"date": day, "clockIn": first.strftime("%H:%M"), "clockOut": last.strftime("%H:%M") if has_pair else "", "workMinutes": minutes, "status": state})
+    return result
+
+
+def run_personal_inspection() -> int:
+    started_at = datetime.now().isoformat(timespec="seconds")
+    write_json_atomic(PERSONAL_RUN_FILE, {"schemaVersion": 1, "state": "running", "pid": os.getpid(), "startedAt": started_at, "completedAt": "", "message": "正在同步个人考勤记录…"})
+    lock_handle = None
+    browser = None
+    context = None
+    try:
+        config, account = ensure_personal_run_ready()
+        import keyring_utils  # noqa: F401 - validates the trusted local dependency before login.
+        import license_manager
+        import openpyxl
+        import iepms_attendance_monitor as monitor
+        from playwright.sync_api import sync_playwright
+        if not license_manager.require_activation("个人考勤巡检"):
+            raise RuntimeError("软件未激活。")
+        lock_handle = monitor.acquire_single_instance()
+        if lock_handle is None:
+            raise RuntimeError("已有巡检任务正在执行。")
+        workbook = openpyxl.load_workbook(ROSTER_FILE, read_only=True, data_only=True)
+        rows = list(workbook.active.iter_rows(values_only=True))
+        workbook.close()
+        headers = [str(value or "").strip() for value in rows[0]] if rows else []
+        groups: dict[str, str | None] = {}
+        for values in rows[1:]:
+            row = {name: "" if index >= len(values) or values[index] is None else str(values[index]).strip() for index, name in enumerate(headers)}
+            if normalize_account(row.get("打卡账号")) != account:
+                continue
+            project_name = str(row.get("项目名称", "")).strip()
+            if not project_name:
+                continue
+            project_code = next((str(row.get(key, "")).strip().removesuffix(".0") for key in ("项目号", "项目编号", "项目代码", "项目ID", "ProjectCode", "projCode") if str(row.get(key, "")).strip()), None)
+            groups[project_name] = project_code
+        if not groups:
+            raise RuntimeError("个人账号不在本地花名册中。")
+        if not monitor.run_login():
+            raise RuntimeError("iEPMS 登录失败。")
+        cfg_t = config.get("timeouts") if isinstance(config.get("timeouts"), dict) else {}
+        page_load_ms = int(cfg_t.get("page_load_ms", 60000))
+        element_wait_ms = int(cfg_t.get("element_wait_ms", 30000))
+        main_url = f"{str(config.get('iepms_host', 'https://iepms.zte.com.cn')).rstrip('/')}/zte-crm-iepms-baseui/#/main/mainPortal"
+        collected: list[dict[str, Any]] = []
+        with sync_playwright() as playwright:
+            launch_kwargs: dict[str, Any] = {"headless": True, "args": ["--ignore-certificate-errors", "--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-gpu"]}
+            browser_channel = str(config.get("browser_channel", "chrome")).strip()
+            if browser_channel:
+                launch_kwargs["channel"] = browser_channel
+            browser = playwright.chromium.launch(**launch_kwargs)
+            context = browser.new_context(storage_state=monitor.SESSION_FILE, viewport={"width": 1280, "height": 800})
+            context.set_default_timeout(element_wait_ms)
+            page = context.new_page()
+            page.goto(main_url, wait_until="load", timeout=page_load_ms)
+            start_date = (datetime.now() - timedelta(days=45)).strftime("%Y-%m-%d")
+            today = datetime.now().strftime("%Y-%m-%d")
+            for project_name, project_code in groups.items():
+                result = monitor.fetch_attendance_api(page, project_name, start_date, today, config, project_code)
+                if result is monitor.AUTH_EXPIRED or result is None:
+                    raise RuntimeError("个人考勤数据读取失败。")
+                collected.extend(result)
+        fresh = personal_records_from_api(collected, account)
+        account_hash = hashlib.sha256(account.encode("utf-8")).hexdigest()
+        existing = read_personal_history(account_hash)
+        merged = {str(item["date"]): item for item in existing}
+        merged.update({str(item["date"]): item for item in fresh})
+        records = sorted(merged.values(), key=lambda item: item["date"])[-400:]
+        write_json_atomic(PERSONAL_HISTORY_FILE, {"schemaVersion": 1, "accountHash": account_hash, "records": records})
+        write_json_atomic(PERSONAL_RUN_FILE, {"schemaVersion": 1, "state": "success", "pid": None, "startedAt": started_at, "completedAt": datetime.now().isoformat(timespec="seconds"), "message": f"已同步 {len(fresh)} 天个人考勤记录。"})
+        return 0
+    except Exception as exc:
+        message = str(exc)
+        allowed = ("软件未激活", "已有巡检任务正在执行", "个人账号不在本地花名册中", "iEPMS 登录失败", "个人考勤数据读取失败")
+        safe_message = next((value for value in allowed if value in message), "个人巡检执行失败，请检查本地配置和运行日志。")
+        write_json_atomic(PERSONAL_RUN_FILE, {"schemaVersion": 1, "state": "error", "pid": None, "startedAt": started_at, "completedAt": datetime.now().isoformat(timespec="seconds"), "message": safe_message})
+        return 1
+    finally:
+        if context is not None:
+            try:
+                context.close()
+            except Exception:
+                pass
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
+        if lock_handle is not None:
+            try:
+                lock_handle.close()
+            except Exception:
+                pass
 
 
 def roster_summary() -> dict[str, Any]:
@@ -489,8 +783,11 @@ def main() -> int:
             "schedule-status": schedule_status,
             "configuration-read": configuration_view,
             "personal-attendance": personal_attendance,
+            "personal-automation-read": personal_automation_view,
             "configuration-update": lambda: update_configuration(settings or {}),
             "personal-account-update": lambda: update_personal_account(settings or {}),
+            "personal-run-start": lambda: start_personal_run(settings or {}),
+            "personal-schedule-update": lambda: update_personal_schedule(settings or {}),
         }
         return emit(command, data=handlers[command]())
     except BridgeInputError as exc:
@@ -500,5 +797,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_personal_inspection() if "--personal-run" in sys.argv[1:] else main())
 

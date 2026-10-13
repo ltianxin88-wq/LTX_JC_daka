@@ -159,6 +159,43 @@ test('personal account update rejects extra fields', async () => {
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('personal automation reports readiness without exposing credentials', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'iepms-personal-automation-'))
+  try {
+    await writeFile(join(root, 'config.json'), JSON.stringify({
+      username: 'manager.user', personal_account: 'employee.001',
+      personal_schedule_enabled: true, personal_schedule_times: ['09:15', '18:15'],
+    }), 'utf8')
+    await writeFile(join(root, 'keyring_utils.py'), [
+      'def get_password(username): return "stored-secret"',
+      'def mask_account(username): return "masked"',
+    ].join('\n'), 'utf8')
+    const value = await invoke({ version: 1, command: 'personal-automation-read' }, root)
+    assert.equal(value.ok, true)
+    assert.equal(value.data.accountConfigured, true)
+    assert.equal(value.data.loginReady, true)
+    assert.deepEqual(value.data.schedule, { enabled: true, times: ['09:15', '18:15'] })
+    assert.equal(JSON.stringify(value).includes('stored-secret'), false)
+    assert.equal(JSON.stringify(value).includes('manager.user'), false)
+    assert.equal(JSON.stringify(value).includes('employee.001'), false)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('personal run and schedule commands reject unscoped input before side effects', async () => {
+  for (const request of [
+    { version: 1, command: 'personal-run-start', settings: { command: 'whoami' } },
+    { version: 1, command: 'personal-schedule-update', settings: { enabled: true, times: ['09:15'], path: 'C:/Windows' } },
+  ]) {
+    try {
+      await invoke(request)
+      assert.fail('unscoped personal automation input must be rejected')
+    } catch (error) {
+      assert.equal(error.value.ok, false)
+      assert.equal(error.value.error.code, 'INVALID_CONFIGURATION')
+    }
+  }
+})
+
 test('plugin client is restricted to the local dashboard API', async () => {
   const source = await readFile(new URL('../src/client.tsx', import.meta.url), 'utf8')
   const contracts = await readFile(new URL('../src/contracts.ts', import.meta.url), 'utf8')

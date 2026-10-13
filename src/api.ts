@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { AttendanceBridge, BridgeError } from './bridge.js'
 import {
   API_PREFIX, CLIENT_HEADER, CLIENT_NAME,
-  type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type PersonalAccountUpdate, type PersonalAttendanceView, type ReadCommand, type RecentRunView, type RosterView, type ScheduleView, type StatusView,
+  type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type PersonalAccountUpdate, type PersonalAttendanceView, type PersonalAutomationView, type PersonalScheduleUpdate, type ReadCommand, type RecentRunView, type RosterView, type ScheduleView, type StatusView,
 } from './contracts.js'
 import type { RuntimeContextLike } from './runtime.js'
 
@@ -28,6 +28,9 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, bridge: Atten
   if (path === 'personal-attendance' && method === 'GET') {
     return sendJson(res, 200, await bridge.read<PersonalAttendanceView>('personal-attendance'))
   }
+  if (path === 'personal-automation' && method === 'GET') {
+    return sendJson(res, 200, await bridge.read<PersonalAutomationView>('personal-automation-read'))
+  }
   if (path === 'configuration' && method === 'PUT') {
     const settings = validateConfigurationUpdate(await readJsonBody(req))
     return sendJson(res, 200, await bridge.updateConfiguration(settings))
@@ -35,6 +38,13 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, bridge: Atten
   if (path === 'personal-account' && method === 'PUT') {
     const settings = validatePersonalAccountUpdate(await readJsonBody(req))
     return sendJson(res, 200, await bridge.updatePersonalAccount(settings))
+  }
+  if (path === 'personal-run' && method === 'POST') {
+    return sendJson(res, 202, await bridge.startPersonalRun())
+  }
+  if (path === 'personal-schedule' && method === 'PUT') {
+    const settings = validatePersonalScheduleUpdate(await readJsonBody(req))
+    return sendJson(res, 200, await bridge.updatePersonalSchedule(settings))
   }
   if (method !== 'GET') throw httpError(405, '该考勤接口不支持此请求方式。')
   if (path === 'health') return sendJson(res, 200, { ok: true, mode: 'read-only', service: 'iepms-attendance-plugin' })
@@ -89,6 +99,17 @@ function validatePersonalAccountUpdate(value: unknown): PersonalAccountUpdate {
   if (!account) throw httpError(400, '请填写个人考勤账号。')
   if (account.length > 100 || !/^[A-Za-z0-9_.@-]+$/u.test(account)) throw httpError(400, '个人账号只能包含字母、数字及 . _ @ -。')
   return { account }
+}
+
+function validatePersonalScheduleUpdate(value: unknown): PersonalScheduleUpdate {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw httpError(400, '个人定时配置无效。')
+  const record = value as Record<string, unknown>
+  if (Object.keys(record).length !== 2 || typeof record.enabled !== 'boolean' || !Array.isArray(record.times)) throw httpError(400, '个人定时配置格式无效。')
+  if (record.times.length > 4 || record.times.some(value => typeof value !== 'string')) throw httpError(400, '个人巡检时间最多配置 4 个。')
+  const times = [...new Set(record.times.map(value => String(value).trim()))]
+  if (times.some(value => !/^(?:[01]\d|2[0-3]):[0-5]\d$/u.test(value))) throw httpError(400, '巡检时间必须使用 HH:MM 格式。')
+  if (record.enabled && times.length === 0) throw httpError(400, '启用定时巡检时至少需要一个时间。')
+  return { enabled: record.enabled, times }
 }
 
 function assertBrowserRequest(req: IncomingMessage): void {

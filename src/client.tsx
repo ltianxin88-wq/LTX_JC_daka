@@ -21,7 +21,7 @@ import {
 import {
   API_PREFIX, CLIENT_HEADER, CLIENT_NAME, PLUGIN_ID,
   type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot,
-  type PersonalAttendanceRecord, type PersonalAttendanceStatus, type PersonalAttendanceView,
+  type PersonalAttendanceRecord, type PersonalAttendanceStatus, type PersonalAttendanceView, type PersonalAutomationView,
 } from './contracts.js'
 import { activatePluginWorkspace, observePluginWorkspace } from './workspace-ownership.js'
 import cssText from './client.css'
@@ -111,6 +111,7 @@ function AttendancePanel({ workspace }: { workspace?: WorkspaceController }) {
   const [error, setError] = useState('')
   const [personalState, setPersonalState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const [personal, setPersonal] = useState<PersonalAttendanceView>()
+  const [personalAutomation, setPersonalAutomation] = useState<PersonalAutomationView>()
   const [personalError, setPersonalError] = useState('')
   const load = useCallback(async (background = false): Promise<void> => {
     if (!background) setState('loading')
@@ -129,13 +130,17 @@ function AttendancePanel({ workspace }: { workspace?: WorkspaceController }) {
     }
   }, [])
   useEffect(() => { void load() }, [load])
-  const loadPersonal = useCallback(async (): Promise<void> => {
-    setPersonalState('loading')
+  const loadPersonal = useCallback(async (background = false): Promise<void> => {
+    if (!background) setPersonalState('loading')
     setPersonalError('')
     try {
-      const next = await requestApi<PersonalAttendanceView>('personal-attendance')
-      if (!isPersonalAttendance(next)) throw new Error('个人考勤服务返回了无效数据。')
+      const [next, automation] = await Promise.all([
+        requestApi<PersonalAttendanceView>('personal-attendance'),
+        requestApi<PersonalAutomationView>('personal-automation'),
+      ])
+      if (!isPersonalAttendance(next) || !isPersonalAutomation(automation)) throw new Error('个人考勤服务返回了无效数据。')
       setPersonal(next)
+      setPersonalAutomation(automation)
       setPersonalState('ready')
     } catch (value) {
       setPersonalState('error')
@@ -143,6 +148,11 @@ function AttendancePanel({ workspace }: { workspace?: WorkspaceController }) {
     }
   }, [])
   useEffect(() => { if (view === 'personal' && personalState === 'idle') void loadPersonal() }, [loadPersonal, personalState, view])
+  useEffect(() => {
+    if (view !== 'personal' || personalAutomation?.state !== 'running') return
+    const timer = window.setInterval(() => { void loadPersonal(true) }, 3000)
+    return () => { window.clearInterval(timer) }
+  }, [loadPersonal, personalAutomation?.state, view])
   return <section className="iepms-attendance-workspace" aria-labelledby="iepms-attendance-title">
     <header className="iepms-attendance-header">
       <div>
@@ -167,7 +177,12 @@ function AttendancePanel({ workspace }: { workspace?: WorkspaceController }) {
     />}
     {view === 'personal' && (personalState === 'idle' || personalState === 'loading') && <PersonalSkeleton />}
     {view === 'personal' && personalState === 'error' && <PanelState title="暂时无法读取个人考勤" text={personalError} retry={() => { void loadPersonal() }} />}
-    {view === 'personal' && personalState === 'ready' && personal !== undefined && <PersonalDashboard value={personal} onAccountSaved={setPersonal} />}
+    {view === 'personal' && personalState === 'ready' && personal !== undefined && personalAutomation !== undefined && <PersonalDashboard
+      value={personal}
+      automation={personalAutomation}
+      onAccountSaved={next => { setPersonal(next); void loadPersonal(true) }}
+      onAutomationChanged={setPersonalAutomation}
+    />}
   </section>
 }
 
@@ -201,7 +216,7 @@ function Dashboard({ snapshot, configuration, onConfigurationSaved }: { snapshot
   </div>
 }
 
-function PersonalDashboard({ value, onAccountSaved }: { value: PersonalAttendanceView; onAccountSaved: (value: PersonalAttendanceView) => void }) {
+function PersonalDashboard({ value, automation, onAccountSaved, onAutomationChanged }: { value: PersonalAttendanceView; automation: PersonalAutomationView; onAccountSaved: (value: PersonalAttendanceView) => void; onAutomationChanged: (value: PersonalAutomationView) => void }) {
   const today = new Date()
   const currentMonth = monthKey(today)
   const [selectedMonth, setSelectedMonth] = useState(currentMonth)
@@ -219,6 +234,7 @@ function PersonalDashboard({ value, onAccountSaved }: { value: PersonalAttendanc
   const recent = [...value.records].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8)
   return <div className="iepms-personal-content">
     <PersonalAccountEditor value={value} onSaved={onAccountSaved} />
+    <PersonalAutomationPanel value={automation} onChanged={onAutomationChanged} />
     {value.configured && !value.source.latestAvailable && <div className="iepms-personal-notice"><IconDataOutline16 size={15} /><span>暂无该账号的考勤数据。完成一次巡检后，个人版会从本地结果中整理记录。</span></div>}
     <section className="iepms-personal-metrics" aria-label="个人考勤概览">
       <PersonalMetric icon={<IconAlarmClockOutline16 size={17} />} label="今日状态" value={todayRecord === undefined ? '暂无记录' : personalStatusLabel(todayRecord.status)} detail={todayRecord === undefined ? '等待本地巡检数据' : `上班 ${todayRecord.clockIn || '-'} / 下班 ${todayRecord.clockOut || '-'}`} tone={statusTone(todayRecord?.status)} />
@@ -293,6 +309,69 @@ function PersonalAccountEditor({ value, onSaved }: { value: PersonalAttendanceVi
       </div>
     </form>
     {message !== undefined && <p className={`iepms-personal-account-message is-${message.kind}`} role="alert">{message.text}</p>}
+  </section>
+}
+
+function PersonalAutomationPanel({ value, onChanged }: { value: PersonalAutomationView; onChanged: (value: PersonalAutomationView) => void }) {
+  const initialTimes = value.schedule.times.length > 0 ? value.schedule.times : ['09:15', '18:15']
+  const [enabled, setEnabled] = useState(value.schedule.enabled)
+  const [morningTime, setMorningTime] = useState(initialTimes[0] ?? '09:15')
+  const [eveningTime, setEveningTime] = useState(initialTimes[1] ?? '18:15')
+  const [starting, setStarting] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState<{ kind: 'success' | 'error'; text: string }>()
+  useEffect(() => {
+    setEnabled(value.schedule.enabled)
+    if (value.schedule.times[0]) setMorningTime(value.schedule.times[0])
+    if (value.schedule.times[1]) setEveningTime(value.schedule.times[1])
+  }, [value.schedule.enabled, value.schedule.times.join('|')])
+  const ready = value.accountConfigured && value.loginReady
+  const running = value.state === 'running'
+  const start = async (): Promise<void> => {
+    setStarting(true)
+    setMessage(undefined)
+    try {
+      const next = await requestApi<PersonalAutomationView>('personal-run', { method: 'POST' })
+      if (!isPersonalAutomation(next)) throw new Error('个人巡检服务返回了无效数据。')
+      onChanged(next)
+      setMessage({ kind: 'success', text: '个人巡检已启动，完成后页面会自动刷新。' })
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : '个人巡检启动失败。' })
+    } finally { setStarting(false) }
+  }
+  const saveSchedule = async (): Promise<void> => {
+    const times = [morningTime, eveningTime].map(item => item.trim()).filter(Boolean)
+    if (enabled && times.length === 0) return setMessage({ kind: 'error', text: '请至少设置一个巡检时间。' })
+    setSaving(true)
+    setMessage(undefined)
+    try {
+      const next = await requestApi<PersonalAutomationView>('personal-schedule', {
+        method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled, times }),
+      })
+      if (!isPersonalAutomation(next)) throw new Error('个人定时服务返回了无效数据。')
+      onChanged(next)
+      setMessage({ kind: 'success', text: enabled ? '个人定时巡检已更新。' : '个人定时巡检已停用。' })
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : '个人定时巡检保存失败。' })
+    } finally { setSaving(false) }
+  }
+  const stateText = running ? '执行中' : value.state === 'success' ? '上次成功' : value.state === 'error' ? '上次失败' : '尚未执行'
+  return <section className="iepms-personal-automation" aria-label="个人巡检设置">
+    <header>
+      <div><IconInspectOutline16 size={17} /><span><strong>个人巡检</strong><small>仅同步当前个人账号，不发送钉钉通知</small></span></div>
+      <div className={`iepms-personal-run-state is-${value.state}`}><i />{stateText}{value.lastCompletedAt && <time>{value.lastCompletedAt.replace('T', ' ')}</time>}</div>
+      <button type="button" className="iepms-personal-run-now" disabled={!ready || running || starting} onClick={() => { void start() }}>{running || starting ? '巡检中…' : '立即巡检'}</button>
+    </header>
+    <div className="iepms-personal-schedule">
+      <label className="iepms-personal-schedule-toggle"><input type="checkbox" checked={enabled} disabled={!ready || saving} onChange={event => { setEnabled(event.target.checked) }} /><span><strong>定时巡检</strong><small>工作日到点自动同步</small></span></label>
+      <label><span>上班同步</span><input type="time" value={morningTime} disabled={!ready || !enabled || saving} onChange={event => { setMorningTime(event.target.value) }} /></label>
+      <label><span>下班同步</span><input type="time" value={eveningTime} disabled={!ready || !enabled || saving} onChange={event => { setEveningTime(event.target.value) }} /></label>
+      <button type="button" className="iepms-personal-schedule-save" disabled={!ready || saving} onClick={() => { void saveSchedule() }}>{saving ? '保存中…' : '保存定时'}</button>
+    </div>
+    {!value.accountConfigured && <p className="iepms-personal-automation-hint is-error">请先配置个人考勤账号。</p>}
+    {value.accountConfigured && !value.loginReady && <p className="iepms-personal-automation-hint is-error">执行巡检需要登录 iEPMS，请先在管理版配置登录账号和密码。</p>}
+    {value.message && <p className={`iepms-personal-automation-hint is-${value.state === 'error' ? 'error' : 'status'}`}>{value.message}</p>}
+    {message !== undefined && <p className={`iepms-personal-automation-hint is-${message.kind}`} role={message.kind === 'error' ? 'alert' : 'status'}>{message.text}</p>}
   </section>
 }
 
@@ -390,6 +469,11 @@ function isPersonalAttendance(value: unknown): value is PersonalAttendanceView {
   if (value === null || typeof value !== 'object' || !('configured' in value) || !('records' in value)) return false
   const record = value as Partial<PersonalAttendanceView>
   return typeof record.configured === 'boolean' && Array.isArray(record.records) && record.records.every(item => item !== null && typeof item === 'object' && typeof item.date === 'string' && typeof item.status === 'string')
+}
+function isPersonalAutomation(value: unknown): value is PersonalAutomationView {
+  if (value === null || typeof value !== 'object' || !('state' in value) || !('schedule' in value)) return false
+  const record = value as Partial<PersonalAutomationView>
+  return ['idle', 'running', 'success', 'error'].includes(String(record.state)) && typeof record.accountConfigured === 'boolean' && typeof record.loginReady === 'boolean' && record.schedule !== undefined && typeof record.schedule.enabled === 'boolean' && Array.isArray(record.schedule.times)
 }
 
 function dateKey(value: Date): string { return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}` }
