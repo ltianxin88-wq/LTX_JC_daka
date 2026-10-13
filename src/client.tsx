@@ -199,7 +199,7 @@ function Dashboard({ snapshot, configuration, onConfigurationSaved }: { snapshot
   return <div className="iepms-attendance-content">
     <div className="iepms-attendance-mode" role="status"><IconDataOutline16 size={15} /><span>安全模式</span><p>仅在你点击保存时更新本地配置；不会自动登录、巡检、导出或发送钉钉消息。</p></div>
     <section className="iepms-attendance-summary" aria-label="运行概览">
-      <Metric label="后端状态" value={snapshot.status.application.backendRootAvailable ? '可用' : '不可用'} detail={`${snapshot.status.application.name} ${snapshot.status.application.version}`} good={snapshot.status.application.backendRootAvailable} />
+      <Metric label="插件数据" value={snapshot.status.application.dataRootAvailable ? '可用' : '不可用'} detail={`${snapshot.status.application.name} ${snapshot.status.application.version}`} good={snapshot.status.application.dataRootAvailable} />
       <Metric label="花名册" value={data.rosterAvailable ? `${snapshot.roster.personCount} 人` : '未找到'} detail={data.rosterAvailable ? `${snapshot.roster.projectCount} 个项目` : '请检查本地 roster.xlsx'} good={data.rosterAvailable} />
       <Metric label="计划任务" value={`${snapshot.schedule.tasks.length} 项`} detail={snapshot.schedule.message ?? '已读取本地 Windows 计划任务'} good={snapshot.schedule.supported} />
       <Metric label="配置状态" value={statusConfig.valid ? '已读取' : '需检查'} detail={`${statusConfig.accountConfigured ? '账号已配置' : '账号未配置'} · ${statusConfig.browserConfigured ? '浏览器已配置' : '浏览器未配置'}`} good={statusConfig.valid && statusConfig.accountConfigured} />

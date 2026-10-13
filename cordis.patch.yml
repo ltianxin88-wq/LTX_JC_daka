@@ -3,6 +3,5 @@
     - id: iepms-attendance-plugin
       name: 'iepms-attendance-plugin'
       config:
-        backendRoot: 'D:/dingding/daka'
         pythonPath: 'python'
         bridgeTimeoutMs: 8000

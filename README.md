@@ -2,7 +2,7 @@
 
 `iepms-attendance-plugin` adds a local attendance-monitoring and secure configuration panel to DeepSeek Harness.
 
-Version 0.5.1 provides two switchable views. The management view reads sanitized health, schedule state and recent status from `D:\dingding\daka`, can update the local iEPMS account and runtime policy, and includes a searchable, paged employee roster editor. Plugin-owned data is stored in the SQLite database `D:\dingding\daka\iepms-attendance-plugin.db`: roster rows, personal account selection and schedule preferences, personal attendance history, and personal run state. Existing `roster.xlsx` and the previous personal JSON state are imported once on first use; the Excel file remains unchanged as a migration source and is no longer rewritten by the plugin.
+Version 0.6.0 is self-contained: its Python bridge and login, credential, monitoring, scheduling and attendance support modules are packaged under `backend/`. Runtime data is stored under `%LOCALAPPDATA%\DeepSeek Harness\plugins\iepms-attendance-plugin` by default, including the SQLite database, roster, configuration, session and local history. It does not import or execute code from `D:\dingding\daka`.
 
 The personal view has its own account selector and a one-row roster editor for the employee bound to that account. It cannot browse or modify other employees. Personal synchronization and its immediate/scheduled execution still require the secured management login because the upstream iEPMS API is available only through a management session; after retrieval, records are filtered to the selected personal account. Personal runs never invoke DingTalk alert delivery. Completion and failure messages are retained in the local run state and displayed only inside the plugin.
 
@@ -26,10 +26,10 @@ npm run pack:check
 The bundled Python bridge can be tested without any network activity:
 
 ```powershell
-$env:IEPMS_BACKEND_ROOT='D:\dingding\daka'
+$env:IEPMS_PLUGIN_DATA_ROOT="$env:TEMP\iepms-attendance-plugin-test"
 '{"version":1,"command":"status"}' | python .\backend\iepms_bridge.py
 ```
 
-The bridge loads the existing `keyring_utils.py` from `IEPMS_BACKEND_ROOT`. The plugin sets this path from its trusted server-side configuration; it is never accepted from a browser request.
+The packaged Python dependencies are listed in `backend/requirements.txt`. `legacyImportRoot` is optional and only imports existing data once; it is never used as a runtime module path.
 
 See `DEVELOPMENT_PLAN.md` for the staged implementation plan.

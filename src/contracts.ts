@@ -15,7 +15,7 @@ export interface BridgeResponse<T> {
 }
 
 export interface StatusView {
-  application: { name: string; version: string; backendRootAvailable: boolean }
+  application: { name: string; version: string; dataRootAvailable: boolean }
   configuration: { fileAvailable: boolean; valid: boolean; accountConfigured: boolean; webhookConfigured: boolean; browserConfigured: boolean }
   data: { rosterAvailable: boolean; logAvailable: boolean; lastDataAvailable: boolean }
   safety: { mode: 'read-only'; automaticActionsEnabled: false }

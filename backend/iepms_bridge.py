@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -38,16 +39,39 @@ READ_COMMANDS = {"status", "roster-summary", "roster-read", "personal-roster-rea
 WRITE_COMMANDS = {"configuration-update", "roster-update", "personal-roster-update", "personal-account-update", "personal-run-start", "personal-schedule-update", "personal-makeup-submit"}
 ALLOWED_COMMANDS = READ_COMMANDS | WRITE_COMMANDS
 SCRIPT_ROOT = Path(__file__).resolve().parent
-ROOT = Path(os.environ.get("IEPMS_BACKEND_ROOT", str(SCRIPT_ROOT))).resolve()
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-CONFIG_FILE = ROOT / "config.json"
-ROSTER_FILE = ROOT / "roster.xlsx"
-PLUGIN_DATABASE_FILE = ROOT / "iepms-attendance-plugin.db"
-LOG_FILE = ROOT / "run_log.txt"
-LAST_DATA_FILE = ROOT / "last_attendance_data.json"
-PERSONAL_HISTORY_FILE = ROOT / ".personal_attendance_history.json"
-PERSONAL_RUN_FILE = ROOT / ".personal_attendance_run.json"
+RUNTIME_ROOT = SCRIPT_ROOT / "runtime"
+DATA_ROOT = Path(os.environ.get("IEPMS_PLUGIN_DATA_ROOT", Path(os.environ.get("LOCALAPPDATA", Path.home())) / "DeepSeek Harness" / "plugins" / "iepms-attendance-plugin")).resolve()
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
+if str(RUNTIME_ROOT) not in sys.path:
+    sys.path.insert(0, str(RUNTIME_ROOT))
+if os.environ.get("IEPMS_PLUGIN_TEST_RUNTIME") == "1":
+    sys.path.insert(0, str(DATA_ROOT))
+
+
+def migrate_legacy_data() -> None:
+    marker = DATA_ROOT / ".legacy-import-v1"
+    legacy = os.environ.get("IEPMS_LEGACY_IMPORT_ROOT", "").strip()
+    if marker.exists() or not legacy:
+        return
+    source = Path(legacy).expanduser().resolve()
+    if not source.is_dir() or source == DATA_ROOT:
+        return
+    for name in ("config.json", "roster.xlsx", "iepms-attendance-plugin.db", "last_attendance_data.json", ".personal_attendance_history.json", ".personal_attendance_run.json", "session_state.json"):
+        candidate = source / name
+        destination = DATA_ROOT / name
+        if candidate.is_file() and not destination.exists():
+            shutil.copy2(candidate, destination)
+    marker.write_text("migrated", encoding="utf-8")
+
+
+migrate_legacy_data()
+CONFIG_FILE = DATA_ROOT / "config.json"
+ROSTER_FILE = DATA_ROOT / "roster.xlsx"
+PLUGIN_DATABASE_FILE = DATA_ROOT / "iepms-attendance-plugin.db"
+LOG_FILE = DATA_ROOT / "run_log.txt"
+LAST_DATA_FILE = DATA_ROOT / "last_attendance_data.json"
+PERSONAL_HISTORY_FILE = DATA_ROOT / ".personal_attendance_history.json"
+PERSONAL_RUN_FILE = DATA_ROOT / ".personal_attendance_run.json"
 PERSONAL_TASK_PREFIX = "iEPMS_Personal_"
 ROSTER_FIELDS = (
     ("projectName", "项目名称", 200), ("projectCode", "项目号", 100),
@@ -106,7 +130,7 @@ def read_config() -> tuple[dict[str, Any], bool]:
 
 def version() -> str:
     try:
-        text = (ROOT / "version.py").read_text(encoding="utf-8", errors="replace")
+        text = (RUNTIME_ROOT / "version.py").read_text(encoding="utf-8", errors="replace")
         match = re.search(r"^APP_VERSION\s*=\s*['\"]([^'\"]+)['\"]", text, re.MULTILINE)
         if match:
             return match.group(1)
@@ -119,7 +143,7 @@ def status() -> dict[str, Any]:
     config, valid = read_config()
     export_settings = config.get("export_settings") if isinstance(config.get("export_settings"), dict) else {}
     return {
-        "application": {"name": "iEPMS 考勤自动监控系统", "version": version(), "backendRootAvailable": ROOT.exists()},
+        "application": {"name": "iEPMS 考勤自动监控系统", "version": version(), "dataRootAvailable": DATA_ROOT.exists()},
         "configuration": {
             "fileAvailable": CONFIG_FILE.exists(),
             "valid": valid,
@@ -195,7 +219,7 @@ def parse_configuration_update(settings: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_json_atomic(path: Path, value: dict[str, Any]) -> None:
-    handle, temp_name = tempfile.mkstemp(prefix=f"{path.stem}.", suffix=".tmp", dir=ROOT)
+    handle, temp_name = tempfile.mkstemp(prefix=f"{path.stem}.", suffix=".tmp", dir=DATA_ROOT)
     try:
         with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
             json.dump(value, stream, ensure_ascii=False, indent=2)
@@ -1033,15 +1057,14 @@ def start_personal_run(settings: dict[str, Any]) -> dict[str, Any]:
         raise BridgeInputError("个人巡检正在执行，请等待完成。")
     started_at = datetime.now().isoformat(timespec="seconds")
     write_personal_run_state({"state": "running", "pid": None, "startedAt": started_at, "completedAt": "", "message": "正在启动个人巡检…"})
-    stable_bridge = ROOT / "iepms_bridge.py"
-    bridge_path = stable_bridge if stable_bridge.exists() else Path(__file__).resolve()
+    bridge_path = Path(__file__).resolve()
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     if os.name == "nt":
         flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     try:
         child = subprocess.Popen(
-            [sys.executable, str(bridge_path), "--personal-run"], cwd=str(ROOT),
-            env={**os.environ, "IEPMS_BACKEND_ROOT": str(ROOT), "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
+            [sys.executable, str(bridge_path), "--personal-run"], cwd=str(DATA_ROOT),
+            env={**os.environ, "IEPMS_PLUGIN_DATA_ROOT": str(DATA_ROOT), "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=flags,
         )
@@ -1080,9 +1103,7 @@ def update_personal_schedule(settings: dict[str, Any]) -> dict[str, Any]:
         config, valid = read_config()
         if CONFIG_FILE.exists() and not valid:
             raise BridgeInputError("本地配置无效。")
-    stable_bridge = ROOT / "iepms_bridge.py"
-    if not stable_bridge.exists():
-        raise BridgeInputError("本地个人巡检程序尚未就绪。")
+    bridge_path = Path(__file__).resolve()
     lines = ["$ErrorActionPreference = 'Stop'"]
     if enabled:
         lines.extend([
@@ -1091,13 +1112,13 @@ def update_personal_schedule(settings: dict[str, Any]) -> dict[str, Any]:
             "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 30)",
             "$settings.StartWhenAvailable = $false",
         ])
-        argument = f'"{stable_bridge}" --personal-run'
+        argument = f'"{bridge_path}" --personal-run'
         task_names = []
         for index, task_time in enumerate(times, 1):
             task_name = f"{PERSONAL_TASK_PREFIX}{index}"
             task_names.append(task_name)
             lines.extend([
-                f"$action = New-ScheduledTaskAction -Execute {powershell_quote(sys.executable)} -Argument {powershell_quote(argument)} -WorkingDirectory {powershell_quote(ROOT)}",
+                f"$action = New-ScheduledTaskAction -Execute {powershell_quote(sys.executable)} -Argument {powershell_quote(argument)} -WorkingDirectory {powershell_quote(DATA_ROOT)}",
                 f"$trigger = New-ScheduledTaskTrigger -Daily -At {powershell_quote(task_time)}",
                 f"Register-ScheduledTask -TaskName {powershell_quote(task_name)} -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null",
             ])

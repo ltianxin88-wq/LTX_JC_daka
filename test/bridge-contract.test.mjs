@@ -11,7 +11,7 @@ const backendRoot = 'D:/dingding/daka'
 
 async function invoke(request, root = backendRoot, environment = {}) {
   return new Promise((resolve, reject) => {
-    const process = spawn('python', [bridge], { env: { ...processEnv(), IEPMS_BACKEND_ROOT: root, PYTHONUTF8: '1', ...environment }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+    const process = spawn('python', [bridge], { env: { ...processEnv(), IEPMS_PLUGIN_DATA_ROOT: root, PYTHONPATH: root, IEPMS_PLUGIN_TEST_RUNTIME: '1', PYTHONUTF8: '1', ...environment }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
     let stdout = ''
     let stderr = ''
     process.stdout.setEncoding('utf8')
@@ -384,6 +384,8 @@ test('plugin client is restricted to the local dashboard API', async () => {
   assert.match(styles, /\.iepms-calendar-makeup-legend/)
   assert.match(styles, /\.iepms-calendar-day\.is-overtime-reminder/)
   assert.match(bridgeSource, /def overtime_reminder_dates/)
+  assert.doesNotMatch(bridgeSource, /IEPMS_BACKEND_ROOT/)
+  assert.match(bridgeSource, /RUNTIME_ROOT/)
   assert.match(contracts, /iepms-attendance-local\/v1/)
   assert.match(source, /结果只在插件内提醒/)
   assert.doesNotMatch(personalRun, /send_dingtalk|default_webhook|webhook_url/i)

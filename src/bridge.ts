@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Config } from './config.js'
@@ -13,8 +13,8 @@ export class AttendanceBridge {
 
   constructor(private readonly config: Config) {
     const bundledBridge = resolve(dirname(fileURLToPath(import.meta.url)), '../backend/iepms_bridge.py')
-    const legacyBridge = resolve(config.backendRoot, 'iepms_bridge.py')
-    this.bridgePath = existsSync(bundledBridge) ? bundledBridge : legacyBridge
+    this.bridgePath = bundledBridge
+    mkdirSync(config.dataRoot, { recursive: true })
   }
 
   async read<T>(command: ReadCommand): Promise<T> {
@@ -87,8 +87,8 @@ export class AttendanceBridge {
   private invoke(command: BridgeCommand, settings?: ConfigurationUpdate | PersonalAccountUpdate | PersonalScheduleUpdate | PersonalMakeupSubmit | RosterUpdate | PersonalRosterUpdate | Record<string, never>): Promise<BridgeResponse<unknown>> {
     return new Promise((resolveResult, reject) => {
       const child = spawn(this.config.pythonPath, [this.bridgePath], {
-        cwd: this.config.backendRoot,
-        env: { ...process.env, IEPMS_BACKEND_ROOT: this.config.backendRoot, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+        cwd: this.config.dataRoot,
+        env: { ...process.env, IEPMS_PLUGIN_DATA_ROOT: this.config.dataRoot, IEPMS_LEGACY_IMPORT_ROOT: this.config.legacyImportRoot, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
         windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe'],
       })
