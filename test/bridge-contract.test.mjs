@@ -250,6 +250,24 @@ test('personal run and schedule commands reject unscoped input before side effec
   }
 })
 
+test('configuration stores credentials in the plugin database without a Windows credential backend', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'iepms-sqlite-credentials-'))
+  try {
+    await writeFile(join(root, 'config.json'), '{}\n', 'utf8')
+    const saved = await invoke({ version: 1, command: 'configuration-update', settings: {
+      username: 'sqlite.user', password: 'not-a-real-secret', browserChannel: 'chrome',
+      overnightExemptAttendance: true, overnightCheckWorkHours: false,
+    } }, root)
+    assert.equal(saved.ok, true)
+    assert.equal(saved.data.passwordConfigured, true)
+    assert.equal(JSON.stringify(saved).includes('not-a-real-secret'), false)
+    const view = await invoke({ version: 1, command: 'configuration-read' }, root)
+    assert.equal(view.data.passwordConfigured, true)
+    const rows = await readDatabase(join(root, 'iepms-attendance-plugin.db'), 'SELECT username, length(password) AS password_length FROM plugin_credentials')
+    assert.deepEqual(rows, [{ username: 'sqlite.user', password_length: 17 }])
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 test('management roster imports Excel once, then preserves hidden webhooks in the database', async () => {
   const root = await mkdtemp(join(tmpdir(), 'iepms-roster-'))
   try {

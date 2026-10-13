@@ -111,13 +111,15 @@ export class AttendanceBridge {
       child.stderr.on('data', chunk => { if (stderr.length < MAX_STDERR_BYTES) stderr += chunk })
       child.on('error', () => finish(() => reject(new BridgeError('PYTHON_UNAVAILABLE', '无法启动配置的 Python 运行时。'))))
       child.on('close', code => finish(() => {
-        if (code !== 0) return reject(new BridgeError('BRIDGE_PROCESS_FAILED', 'iEPMS 本地桥接程序执行失败。'))
         try {
           const parsed = JSON.parse(stdout) as BridgeResponse<unknown>
           if (parsed.schemaVersion !== 1 || parsed.command !== command || typeof parsed.ok !== 'boolean') throw new Error()
           resolveResult(parsed)
         } catch {
-          reject(new BridgeError('BRIDGE_PROTOCOL_INVALID', 'iEPMS 本地桥接程序返回了无效数据。'))
+          const message = code === 0
+            ? 'iEPMS 本地桥接程序返回了无效数据。'
+            : 'iEPMS 本地桥接程序执行失败。'
+          reject(new BridgeError(code === 0 ? 'BRIDGE_PROTOCOL_INVALID' : 'BRIDGE_PROCESS_FAILED', message))
         }
       }))
       child.stdin.end(JSON.stringify(settings === undefined ? { version: 1, command } : { version: 1, command, settings }))

@@ -1,144 +1,85 @@
 # -*- coding: utf-8 -*-
-"""
-keyring_utils.py - iEPMS 登录凭据安全存取组件
-==============================================
-业务说明：
-1. 密码安全存储：优先使用 Windows 凭据管理器（Credential Manager）加密存储 iEPMS 密码。
-2. 降级容错：若 keyring 库不可用，自动降级为 Windows DPAPI 硬件加密。
-3. 脱敏处理：日志与界面中展示账号时保留前 2 后 2 位（如 60****08）。
+"""Plugin-local account and password storage.
+
+The desktop plugin intentionally does not depend on Windows Credential Manager,
+DPAPI, or a separately installed keyring package. Credentials are persisted in
+the plugin-owned SQLite database and are never returned by bridge responses or
+written to logs.
 """
 
-import base64
-import os
-import sys
-import json
+from __future__ import annotations
+
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+
 from plugin_paths import data_root
 
-SERVICE_NAME = "iEPMS_Monitor"
 
-SCRIPT_DIR = str(data_root())
-
-_DPAPI_FILE = os.path.join(SCRIPT_DIR, ".credential")
+DATABASE_FILE = Path(data_root()) / "iepms-attendance-plugin.db"
 
 
-def _log(msg):
-    try:
-        from logger import log
-        log(msg)
-    except Exception:
-        try:
-            print(msg)
-        except Exception:
-            pass
+def _connection() -> sqlite3.Connection:
+    DATABASE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(DATABASE_FILE, timeout=10)
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS plugin_credentials (
+            username TEXT PRIMARY KEY,
+            password TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    return connection
 
 
-# ============================================================
-# keyring 后端
-# ============================================================
-def _keyring_available():
-    try:
-        import keyring
-        # 触发一次后端探测，某些环境下后端不可用会抛异常
-        keyring.get_keyring()
-        return True
-    except Exception:
-        return False
-
-
-def get_password(username):
-    """读取指定账号的密码。返回 None 表示未存储。"""
+def get_password(username: str) -> str | None:
+    """Return a password only to the trusted local Python runtime."""
     if not username:
         return None
-    if _keyring_available():
-        try:
-            import keyring
-            return keyring.get_password(SERVICE_NAME, username)
-        except Exception as e:
-            _log(f"[凭据] keyring 读取失败，尝试 DPAPI 降级: {e}")
-    return _dpapi_read(username)
+    connection = _connection()
+    try:
+        row = connection.execute(
+            "SELECT password FROM plugin_credentials WHERE username = ?", (username,)
+        ).fetchone()
+        return str(row[0]) if row is not None else None
+    finally:
+        connection.close()
 
 
-def set_password(username, password):
-    """写入指定账号的密码。"""
+def set_password(username: str, password: str) -> bool:
     if not username or not password:
         return False
-    if _keyring_available():
-        try:
-            import keyring
-            keyring.set_password(SERVICE_NAME, username, password)
-            return True
-        except Exception as e:
-            _log(f"[凭据] keyring 写入失败，尝试 DPAPI 降级: {e}")
-    return _dpapi_write(username, password)
+    connection = _connection()
+    try:
+        connection.execute(
+            """INSERT INTO plugin_credentials (username, password, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(username) DO UPDATE SET
+                password = excluded.password, updated_at = excluded.updated_at""",
+            (username, password, datetime.now().isoformat(timespec="seconds")),
+        )
+        connection.commit()
+        return True
+    except sqlite3.Error:
+        return False
+    finally:
+        connection.close()
 
 
-def delete_password(username):
-    """删除指定账号的密码（尽力而为）。"""
+def delete_password(username: str) -> None:
     if not username:
         return
-    if _keyring_available():
-        try:
-            import keyring
-            keyring.delete_password(SERVICE_NAME, username)
-        except Exception:
-            pass
+    connection = _connection()
     try:
-        if os.path.exists(_DPAPI_FILE):
-            with open(_DPAPI_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if username in data:
-                del data[username]
-                with open(_DPAPI_FILE, "w", encoding="utf-8") as f:
-                    json.dump(data, f)
-    except Exception:
-        pass
+        connection.execute("DELETE FROM plugin_credentials WHERE username = ?", (username,))
+        connection.commit()
+    finally:
+        connection.close()
 
 
-# ============================================================
-# DPAPI 降级后端（pywin32）
-# ============================================================
-def _dpapi_read(username):
-    try:
-        import win32crypt
-        if not os.path.exists(_DPAPI_FILE):
-            return None
-        with open(_DPAPI_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        blob = data.get(username)
-        if not blob:
-            return None
-        raw = win32crypt.CryptUnprotectData(base64.b64decode(blob), None, None, None, 0)[1]
-        return raw.decode("utf-8")
-    except Exception:
-        return None
-
-
-def _dpapi_write(username, password):
-    try:
-        import win32crypt
-        blob = win32crypt.CryptProtectData(password.encode("utf-8"), None, None, None, None, 0)
-        data = {}
-        if os.path.exists(_DPAPI_FILE):
-            try:
-                with open(_DPAPI_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            except Exception:
-                data = {}
-        data[username] = base64.b64encode(blob).decode("ascii")
-        with open(_DPAPI_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f)
-        return True
-    except Exception as e:
-        _log(f"[凭据] DPAPI 写入失败: {e}")
-        return False
-
-
-# ============================================================
-# 账号脱敏
-# ============================================================
-def mask_account(acc):
-    """工号脱敏：保留前2后2，如 60****08。用于一切日志与界面显示。"""
-    s = str(acc or "").strip()
-    if len(s) <= 4:
+def mask_account(account: str) -> str:
+    value = str(account or "").strip()
+    if len(value) <= 4:
         return "****"
-    return s[:2] + "****" + s[-2:]
+    return value[:2] + "****" + value[-2:]

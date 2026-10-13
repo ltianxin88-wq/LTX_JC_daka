@@ -578,7 +578,7 @@ function ConfigurationEditor({ value, onSaved }: { value: ConfigurationView; onS
         {value.webhookConfigured && <label><input type="checkbox" checked={clearWebhook} onChange={event => { setClearWebhook(event.target.checked) }} /><span>清除现有 Webhook</span></label>}
       </div>
       <div className="iepms-attendance-config-actions">
-        <p>密码存入 Windows 安全凭据；页面与接口均不回显密码或 Webhook。</p>
+        <p>账号和密码仅存入插件本地数据库；页面与接口均不回显密码或 Webhook。</p>
         <button type="submit" disabled={saving}>{saving ? '保存中…' : '保存配置'}</button>
       </div>
       {message !== undefined && <p className={`iepms-attendance-config-message is-${message.kind}`} role={message.kind === 'error' ? 'alert' : 'status'}>{message.text}</p>}

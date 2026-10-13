@@ -560,7 +560,7 @@ def update_configuration(settings: dict[str, Any]) -> dict[str, Any]:
         with redirect_stdout(sys.stderr):
             stored = keyring_utils.set_password(next_username, password)
         if not stored:
-            raise BridgeInputError("密码写入 Windows 安全凭据存储失败。")
+            raise BridgeInputError("密码写入插件本地数据库失败。")
     if "username" in patch:
         config["username"] = next_username
     if "defaultWebhook" in patch:
