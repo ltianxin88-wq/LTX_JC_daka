@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { Config } from './config.js'
-import type { BridgeResponse, ReadCommand } from './contracts.js'
+import type { BridgeCommand, BridgeResponse, ConfigurationUpdate, ConfigurationView, ReadCommand } from './contracts.js'
 
 const MAX_STDOUT_BYTES = 256 * 1024
 const MAX_STDERR_BYTES = 16 * 1024
@@ -11,7 +12,9 @@ export class AttendanceBridge {
   readonly bridgePath: string
 
   constructor(private readonly config: Config) {
-    this.bridgePath = resolve(config.backendRoot, 'iepms_bridge.py')
+    const bundledBridge = resolve(dirname(fileURLToPath(import.meta.url)), '../backend/iepms_bridge.py')
+    const legacyBridge = resolve(config.backendRoot, 'iepms_bridge.py')
+    this.bridgePath = existsSync(bundledBridge) ? bundledBridge : legacyBridge
   }
 
   async read<T>(command: ReadCommand): Promise<T> {
@@ -24,11 +27,20 @@ export class AttendanceBridge {
     return response.data as T
   }
 
-  private invoke(command: ReadCommand): Promise<BridgeResponse<unknown>> {
+  async updateConfiguration(settings: ConfigurationUpdate): Promise<ConfigurationView> {
+    if (!existsSync(this.bridgePath)) throw new BridgeError('BACKEND_UNAVAILABLE', '未找到 iEPMS 本地桥接程序。')
+    const response = await this.invoke('configuration-update', settings)
+    if (!response.ok || response.data === undefined) {
+      throw new BridgeError(response.error?.code ?? 'BRIDGE_FAILED', response.error?.message ?? '本地配置保存失败。')
+    }
+    return response.data as ConfigurationView
+  }
+
+  private invoke(command: BridgeCommand, settings?: ConfigurationUpdate): Promise<BridgeResponse<unknown>> {
     return new Promise((resolveResult, reject) => {
       const child = spawn(this.config.pythonPath, [this.bridgePath], {
         cwd: this.config.backendRoot,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+        env: { ...process.env, IEPMS_BACKEND_ROOT: this.config.backendRoot, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
         windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe'],
       })
@@ -60,7 +72,7 @@ export class AttendanceBridge {
           reject(new BridgeError('BRIDGE_PROTOCOL_INVALID', 'iEPMS 本地桥接程序返回了无效数据。'))
         }
       }))
-      child.stdin.end(JSON.stringify({ version: 1, command }))
+      child.stdin.end(JSON.stringify(settings === undefined ? { version: 1, command } : { version: 1, command, settings }))
     })
   }
 }

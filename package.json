@@ -1,7 +1,7 @@
 {
   "name": "iepms-attendance-plugin",
-  "version": "0.1.4",
-  "description": "Read-only iEPMS attendance monitor panel for DeepSeek Harness",
+  "version": "0.2.0",
+  "description": "Local iEPMS attendance monitor and secure configuration panel for DeepSeek Harness",
   "license": "UNLICENSED",
   "type": "module",
   "main": "./lib/index.js",
@@ -12,7 +12,7 @@
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
-  "files": ["lib/**/*.js", "lib/**/*.d.ts", "lib/**/*.map", "cordis.patch.yml", "README.md", "DEVELOPMENT_PLAN.md"],
+  "files": ["lib/**/*.js", "lib/**/*.d.ts", "lib/**/*.map", "backend/iepms_bridge.py", "cordis.patch.yml", "README.md", "DEVELOPMENT_PLAN.md"],
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": {
@@ -30,9 +30,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
     "clean": "node -e \"require('node:fs').rmSync('lib', { recursive: true, force: true })\"",
-    "prepack": "npm run clean && npm run build",
     "test": "npm run build && node --test test/*.test.mjs",
-    "pack:check": "npm pack --dry-run"
+    "pack:check": "npm run clean && npm run build && npm pack --dry-run --ignore-scripts"
   },
   "optionalDependencies": {
     "@deepseek-ai/cordis": "^4.0.4",

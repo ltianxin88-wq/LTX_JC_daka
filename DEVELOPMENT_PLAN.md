@@ -169,8 +169,8 @@ All state-changing requests require an operation nonce issued by the plugin runt
 - [ ] Surface existing managed Task Scheduler tasks and their next/last run state.
 - [ ] Add explicit enable, edit and disable flows that use the existing scheduler safeguards.
 - [ ] Add roster validation and aggregate preview before accepting a roster replacement.
-- [ ] Add configuration health checks for account presence, credential availability, webhook presence and browser/dependency readiness without returning their values.
-- [ ] Decide whether editable configuration stays in the legacy GUI for v1 or moves to guarded DSH settings forms; document the decision.
+- [x] Add configuration health checks for account presence, credential availability, webhook presence and browser/dependency readiness without returning their values.
+- [x] Add a guarded DSH settings form for account credentials, Webhook, browser channel and overnight policy while retaining backward compatibility with the legacy GUI.
 - [ ] Keep configuration file formats backward-compatible until a migration and rollback path is tested.
 
 ### Acceptance Criteria

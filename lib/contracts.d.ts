@@ -2,11 +2,12 @@ export declare const PLUGIN_ID = "iepms-attendance-plugin";
 export declare const API_PREFIX = "/iepms-attendance-local/v1";
 export declare const CLIENT_HEADER = "x-iepms-attendance-client";
 export declare const CLIENT_NAME = "dashboard-web";
-export type ReadCommand = 'status' | 'roster-summary' | 'recent-runs' | 'schedule-status';
+export type ReadCommand = 'status' | 'roster-summary' | 'recent-runs' | 'schedule-status' | 'configuration-read';
+export type BridgeCommand = ReadCommand | 'configuration-update';
 export interface BridgeResponse<T> {
     ok: boolean;
     schemaVersion: 1;
-    command: ReadCommand;
+    command: BridgeCommand;
     data?: T;
     error?: {
         code: string;
@@ -54,6 +55,23 @@ export interface RecentRunView {
     timestamp: string;
     level: 'ok' | 'warning' | 'error' | 'info';
     summary: string;
+}
+export interface ConfigurationView {
+    accountConfigured: boolean;
+    accountMasked: string;
+    passwordConfigured: boolean;
+    webhookConfigured: boolean;
+    browserChannel: 'chrome' | 'chromium' | 'msedge';
+    overnightExemptAttendance: boolean;
+    overnightCheckWorkHours: boolean;
+}
+export interface ConfigurationUpdate {
+    username?: string;
+    password?: string;
+    defaultWebhook?: string;
+    browserChannel?: ConfigurationView['browserChannel'];
+    overnightExemptAttendance?: boolean;
+    overnightCheckWorkHours?: boolean;
 }
 export interface DashboardSnapshot {
     status: StatusView;

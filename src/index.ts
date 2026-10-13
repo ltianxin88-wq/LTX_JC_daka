@@ -15,7 +15,7 @@ export function apply(ctx: Context, config: AttendanceConfig): void {
   const bridge = new AttendanceBridge(resolved)
   runtime.effect(() => {
     const dispose = registerAttendanceApi(runtime, bridge)
-    runtime.logger.info('iepms-attendance-plugin: read-only local dashboard API registered')
+    runtime.logger.info('iepms-attendance-plugin: local dashboard and secure configuration API registered')
     return dispose
   }, 'iepms-attendance-plugin.api')
 }
