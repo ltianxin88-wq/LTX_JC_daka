@@ -3,7 +3,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Config } from './config.js'
-import type { BridgeCommand, BridgeResponse, ConfigurationUpdate, ConfigurationView, PersonalAccountUpdate, PersonalAttendanceView, PersonalAutomationView, PersonalMakeupSubmit, PersonalMakeupView, PersonalRosterUpdate, PersonalRosterView, PersonalScheduleUpdate, ReadCommand, RosterTableView, RosterUpdate } from './contracts.js'
+import type { BridgeCommand, BridgeResponse, ConfigurationUpdate, ConfigurationView, ManagementRunView, PersonalAccountUpdate, PersonalAttendanceView, PersonalAutomationView, PersonalMakeupSubmit, PersonalMakeupView, PersonalRosterUpdate, PersonalRosterView, PersonalScheduleUpdate, ReadCommand, RosterTableView, RosterUpdate } from './contracts.js'
 
 const MAX_STDOUT_BYTES = 2 * 1024 * 1024
 const MAX_STDERR_BYTES = 16 * 1024
@@ -52,6 +52,12 @@ export class AttendanceBridge {
       throw new BridgeError(response.error?.code ?? 'BRIDGE_FAILED', response.error?.message ?? '个人巡检启动失败。')
     }
     return response.data as PersonalAutomationView
+  }
+
+  async startManagementRun(): Promise<ManagementRunView> {
+    const response = await this.invoke('management-run-start', {})
+    if (!response.ok || response.data === undefined) throw new BridgeError(response.error?.code ?? 'BRIDGE_FAILED', response.error?.message ?? '管理巡检启动失败。')
+    return response.data as ManagementRunView
   }
 
   async updatePersonalSchedule(settings: PersonalScheduleUpdate): Promise<PersonalAutomationView> {

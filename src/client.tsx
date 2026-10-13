@@ -20,7 +20,7 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   API_PREFIX, CLIENT_HEADER, CLIENT_NAME, PLUGIN_ID,
-  type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot,
+  type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type ManagementRunView,
   type PersonalAttendanceRecord, type PersonalAttendanceStatus, type PersonalAttendanceView, type PersonalAutomationView, type PersonalMakeupView, type PersonalRosterView,
   type RosterRow, type RosterTableView,
 } from './contracts.js'
@@ -162,7 +162,7 @@ function AttendancePanel({ workspace }: { workspace?: WorkspaceController }) {
       <div>
         {workspace !== undefined && <button type="button" className="iepms-attendance-back" onClick={workspace.close} aria-label="返回对话" title="返回对话"><IconChevronLeftOutline16 size={16} /></button>}
         <IconAlarmClockOutline16 size={20} />
-        <span><h1 id="iepms-attendance-title">考勤监控</h1><p>{view === 'management' ? '管理版 · 本地运行状态与配置' : '个人版 · 我的出勤记录'}</p></span>
+        <span><h1 id="iepms-attendance-title">考勤监控</h1><p>{view === 'management' ? '管理版 · 插件状态与配置' : '个人版 · 我的出勤记录'}</p></span>
       </div>
       <div className="iepms-attendance-header-actions">
         <div className="iepms-attendance-view-switch" role="tablist" aria-label="考勤视图">
@@ -173,7 +173,7 @@ function AttendancePanel({ workspace }: { workspace?: WorkspaceController }) {
       </div>
     </header>
     <div className="iepms-attendance-scroll" tabIndex={0} aria-label="考勤监控内容">
-      {view === 'management' && state === 'loading' && <PanelState title="正在读取本地状态" text="不会登录 iEPMS，也不会发送通知。" />}
+      {view === 'management' && state === 'loading' && <PanelState title="正在读取插件状态" text="不会登录 iEPMS，也不会发送通知。" />}
       {view === 'management' && state === 'error' && <PanelState title="暂时无法读取考勤状态" text={error} retry={() => { void load() }} />}
       {view === 'management' && state === 'ready' && snapshot !== undefined && configuration !== undefined && <Dashboard
         snapshot={snapshot}
@@ -204,6 +204,7 @@ function Dashboard({ snapshot, configuration, onConfigurationSaved }: { snapshot
       <Metric label="计划任务" value={`${snapshot.schedule.tasks.length} 项`} detail={snapshot.schedule.message ?? '已读取本地 Windows 计划任务'} good={snapshot.schedule.supported} />
       <Metric label="配置状态" value={statusConfig.valid ? '已读取' : '需检查'} detail={`${statusConfig.accountConfigured ? '账号已配置' : '账号未配置'} · ${statusConfig.browserConfigured ? '浏览器已配置' : '浏览器未配置'}`} good={statusConfig.valid && statusConfig.accountConfigured} />
     </section>
+    <ManagementOperations />
     <div className="iepms-attendance-columns">
       <section className="iepms-attendance-section"><header><IconClockOutline16 size={16} /><h2>近期状态</h2></header>
         {snapshot.recentRuns.length === 0 ? <Empty text="尚无可展示的本地运行摘要。" /> : <ol className="iepms-attendance-events">{snapshot.recentRuns.map((item, index) => <li key={`${item.timestamp}-${index}`} className={`is-${item.level}`}><time>{item.timestamp}</time><span>{item.summary}</span></li>)}</ol>}
@@ -222,6 +223,53 @@ function Dashboard({ snapshot, configuration, onConfigurationSaved }: { snapshot
       <Readiness label="最近导出数据" ready={data.lastDataAvailable} missingLabel="暂无数据" />
     </ul></section>
   </div>
+}
+
+function ManagementOperations() {
+  const [run, setRun] = useState<ManagementRunView>()
+  const [logs, setLogs] = useState<string[]>([])
+  const [loading, setLoading] = useState(true)
+  const [starting, setStarting] = useState(false)
+  const [error, setError] = useState('')
+  const refresh = useCallback(async (): Promise<void> => {
+    try {
+      const [nextRun, nextLogs] = await Promise.all([
+        requestApi<ManagementRunView>('management-run'), requestApi<string[]>('management-log'),
+      ])
+      if (!isManagementRun(nextRun) || !Array.isArray(nextLogs) || !nextLogs.every(line => typeof line === 'string')) throw new Error('管理巡检服务返回了无效数据。')
+      setRun(nextRun)
+      setLogs(nextLogs)
+      setError('')
+    } catch (value) {
+      setError(value instanceof Error ? value.message : '无法读取管理巡检状态。')
+    } finally { setLoading(false) }
+  }, [])
+  useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => {
+    if (run?.state !== 'running') return
+    const timer = window.setInterval(() => { void refresh() }, 3000)
+    return () => { window.clearInterval(timer) }
+  }, [refresh, run?.state])
+  const start = async (): Promise<void> => {
+    if (!window.confirm('立即运行管理巡检？该操作会登录 iEPMS，并可能向已配置的钉钉 Webhook 发送通知。')) return
+    setStarting(true)
+    setError('')
+    try {
+      const next = await requestApi<ManagementRunView>('management-run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+      if (!isManagementRun(next)) throw new Error('管理巡检服务返回了无效数据。')
+      setRun(next)
+      await refresh()
+    } catch (value) {
+      setError(value instanceof Error ? value.message : '管理巡检启动失败。')
+    } finally { setStarting(false) }
+  }
+  const running = run?.state === 'running'
+  return <section className="iepms-attendance-section iepms-management-operations" aria-label="管理巡检">
+    <header><IconGaugeOutline16 size={16} /><h2>管理巡检</h2><span className={`iepms-management-state is-${run?.state ?? 'idle'}`}>{running ? '执行中' : run?.state === 'success' ? '已完成' : run?.state === 'error' ? '执行失败' : '尚未执行'}</span><button type="button" disabled={loading || starting || running} onClick={() => { void start() }}>{starting || running ? '巡检中…' : '立即巡检'}</button></header>
+    {run?.message && <p className={`iepms-management-message is-${run.state === 'error' ? 'error' : 'status'}`} role={run.state === 'error' ? 'alert' : 'status'}>{run.message}</p>}
+    {error && <p className="iepms-management-message is-error" role="alert">{error}</p>}
+    <div className="iepms-management-log"><div><strong>运行日志</strong><button type="button" onClick={() => { void refresh() }} disabled={loading}>刷新日志</button></div><pre>{logs.length > 0 ? logs.join('\n') : '暂无运行日志。'}</pre></div>
+  </section>
 }
 
 function PersonalDashboard({ value, automation, makeup, onAccountSaved, onAutomationChanged }: { value: PersonalAttendanceView; automation: PersonalAutomationView; makeup: PersonalMakeupView; onAccountSaved: (value: PersonalAttendanceView) => void; onAutomationChanged: (value: PersonalAutomationView) => void }) {
@@ -595,6 +643,7 @@ function Empty({ text }: { text: string }) { return <p className="iepms-attendan
 function PanelState({ title, text, retry }: { title: string; text: string; retry?: () => void }) { return <div className="iepms-attendance-state" role={retry === undefined ? 'status' : 'alert'}><h2>{title}</h2><p>{text}</p>{retry !== undefined && <button type="button" onClick={retry}>重试</button>}</div> }
 function taskStateLabel(value: string): string { return value === 'ready' ? '就绪' : value === 'running' ? '运行中' : value === 'disabled' ? '已停用' : '未知' }
 function isSnapshot(value: unknown): value is DashboardSnapshot { return value !== null && typeof value === 'object' && 'status' in value && 'roster' in value && 'schedule' in value && 'recentRuns' in value }
+function isManagementRun(value: unknown): value is ManagementRunView { return value !== null && typeof value === 'object' && ['idle', 'running', 'success', 'error'].includes(String((value as { state?: unknown }).state)) && typeof (value as { message?: unknown }).message === 'string' }
 function isConfiguration(value: unknown): value is ConfigurationView { return value !== null && typeof value === 'object' && 'accountConfigured' in value && 'passwordConfigured' in value && 'browserChannel' in value }
 function isPersonalAttendance(value: unknown): value is PersonalAttendanceView {
   if (value === null || typeof value !== 'object' || !('configured' in value) || !('records' in value)) return false

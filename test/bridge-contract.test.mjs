@@ -95,9 +95,9 @@ test('read-only bridge returns a sanitized status view', async () => {
   assert.equal(JSON.stringify(value).includes('default_webhook'), false)
 })
 
-test('bridge rejects side-effect commands and unexpected parameters', async () => {
+test('bridge rejects unsupported commands and unexpected parameters', async () => {
   for (const request of [
-    { version: 1, command: 'run-check' },
+    { version: 1, command: 'unsupported-command' },
     { version: 1, command: 'status', path: 'C:/Windows' },
   ]) {
     try {
@@ -407,5 +407,7 @@ test('plugin client is restricted to the local dashboard API', async () => {
   assert.match(contracts, /iepms-attendance-local\/v1/)
   assert.match(source, /结果只在插件内提醒/)
   assert.doesNotMatch(personalRun, /send_dingtalk|default_webhook|webhook_url/i)
-  assert.doesNotMatch(source, /['"](?:run-check|refresh-session|schedule-update|dingtalk)['"]/i)
+  assert.match(source, /management-run/)
+  assert.match(bridgeSource, /def start_management_run/)
+  assert.match(bridgeSource, /def management_log/)
 })

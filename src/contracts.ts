@@ -3,8 +3,8 @@ export const API_PREFIX = '/iepms-attendance-local/v1'
 export const CLIENT_HEADER = 'x-iepms-attendance-client'
 export const CLIENT_NAME = 'dashboard-web'
 
-export type ReadCommand = 'status' | 'roster-summary' | 'roster-read' | 'personal-roster-read' | 'recent-runs' | 'schedule-status' | 'configuration-read' | 'personal-attendance' | 'personal-automation-read' | 'personal-makeup-read'
-export type BridgeCommand = ReadCommand | 'configuration-update' | 'roster-update' | 'personal-roster-update' | 'personal-account-update' | 'personal-run-start' | 'personal-schedule-update' | 'personal-makeup-submit'
+export type ReadCommand = 'status' | 'roster-summary' | 'roster-read' | 'personal-roster-read' | 'recent-runs' | 'schedule-status' | 'configuration-read' | 'personal-attendance' | 'personal-automation-read' | 'personal-makeup-read' | 'management-run-read' | 'management-log-read'
+export type BridgeCommand = ReadCommand | 'configuration-update' | 'roster-update' | 'personal-roster-update' | 'personal-account-update' | 'personal-run-start' | 'personal-schedule-update' | 'personal-makeup-submit' | 'management-run-start'
 
 export interface BridgeResponse<T> {
   ok: boolean
@@ -78,6 +78,13 @@ export interface PersonalAutomationView {
   accountConfigured: boolean
   loginReady: boolean
   schedule: { enabled: boolean; times: string[] }
+}
+
+export interface ManagementRunView {
+  state: 'idle' | 'running' | 'success' | 'error'
+  lastRunAt: string
+  lastCompletedAt: string
+  message: string
 }
 
 export type PersonalAttendanceStatus = 'normal' | 'late' | 'early' | 'missing' | 'checked-in' | 'pending'

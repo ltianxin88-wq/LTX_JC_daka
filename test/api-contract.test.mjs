@@ -12,6 +12,8 @@ test('local API permits reads and scoped configuration updates with a same-origi
   assert.match(source, /path === 'personal-automation' && method === 'GET'/)
   assert.match(source, /path === 'personal-makeup' && method === 'GET'/)
   assert.match(source, /path === 'personal-run' && method === 'POST'/)
+  assert.match(source, /path === 'management-run' && method === 'POST'/)
+  assert.match(source, /path === 'management-log' && method === 'GET'/)
   assert.match(source, /path === 'personal-schedule' && method === 'PUT'/)
   assert.match(source, /path === 'personal-makeup' && method === 'POST'/)
   assert.match(source, /path === 'roster' && method === 'GET'/)

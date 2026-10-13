@@ -1,5 +1,5 @@
 import type { Config } from './config.js';
-import type { ConfigurationUpdate, ConfigurationView, PersonalAccountUpdate, PersonalAttendanceView, PersonalAutomationView, PersonalMakeupSubmit, PersonalMakeupView, PersonalRosterUpdate, PersonalRosterView, PersonalScheduleUpdate, ReadCommand, RosterTableView, RosterUpdate } from './contracts.js';
+import type { ConfigurationUpdate, ConfigurationView, ManagementRunView, PersonalAccountUpdate, PersonalAttendanceView, PersonalAutomationView, PersonalMakeupSubmit, PersonalMakeupView, PersonalRosterUpdate, PersonalRosterView, PersonalScheduleUpdate, ReadCommand, RosterTableView, RosterUpdate } from './contracts.js';
 export declare class AttendanceBridge {
     private readonly config;
     readonly bridgePath: string;
@@ -8,6 +8,7 @@ export declare class AttendanceBridge {
     updateConfiguration(settings: ConfigurationUpdate): Promise<ConfigurationView>;
     updatePersonalAccount(settings: PersonalAccountUpdate): Promise<PersonalAttendanceView>;
     startPersonalRun(): Promise<PersonalAutomationView>;
+    startManagementRun(): Promise<ManagementRunView>;
     updatePersonalSchedule(settings: PersonalScheduleUpdate): Promise<PersonalAutomationView>;
     updateRoster(settings: RosterUpdate): Promise<RosterTableView>;
     updatePersonalRoster(settings: PersonalRosterUpdate): Promise<PersonalRosterView>;

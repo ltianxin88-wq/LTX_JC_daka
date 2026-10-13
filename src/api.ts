@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { AttendanceBridge, BridgeError } from './bridge.js'
 import {
   API_PREFIX, CLIENT_HEADER, CLIENT_NAME,
-  type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type PersonalAccountUpdate, type PersonalAttendanceView, type PersonalAutomationView, type PersonalMakeupSubmit, type PersonalMakeupView, type PersonalRosterUpdate, type PersonalRosterView, type PersonalScheduleUpdate, type ReadCommand, type RecentRunView, type RosterTableView, type RosterUpdate, type RosterView, type ScheduleView, type StatusView,
+  type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type ManagementRunView, type PersonalAccountUpdate, type PersonalAttendanceView, type PersonalAutomationView, type PersonalMakeupSubmit, type PersonalMakeupView, type PersonalRosterUpdate, type PersonalRosterView, type PersonalScheduleUpdate, type ReadCommand, type RecentRunView, type RosterTableView, type RosterUpdate, type RosterView, type ScheduleView, type StatusView,
 } from './contracts.js'
 import type { RuntimeContextLike } from './runtime.js'
 
@@ -51,6 +51,10 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, bridge: Atten
   if (path === 'personal-run' && method === 'POST') {
     return sendJson(res, 202, await bridge.startPersonalRun())
   }
+  if (path === 'management-run' && method === 'POST') {
+    await requireEmptyJsonBody(req)
+    return sendJson(res, 202, await bridge.startManagementRun())
+  }
   if (path === 'personal-schedule' && method === 'PUT') {
     const settings = validatePersonalScheduleUpdate(await readJsonBody(req))
     return sendJson(res, 200, await bridge.updatePersonalSchedule(settings))
@@ -76,10 +80,19 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, bridge: Atten
     ])
     return sendJson(res, 200, { status, roster, schedule, recentRuns } satisfies DashboardSnapshot)
   }
+  if (path === 'management-run' && method === 'GET') return sendJson(res, 200, await bridge.read<ManagementRunView>('management-run-read'))
+  if (path === 'management-log' && method === 'GET') return sendJson(res, 200, await bridge.read<string[]>('management-log-read'))
   if (path === 'status' || path === 'roster-summary' || path === 'schedule-status' || path === 'recent-runs') {
     return sendJson(res, 200, await bridge.read(path as ReadCommand))
   }
   throw httpError(404, '考勤状态接口不存在。')
+}
+
+async function requireEmptyJsonBody(req: IncomingMessage): Promise<void> {
+  const value = await readJsonBody(req)
+  if (value === null || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 0) {
+    throw httpError(400, '管理巡检不接受额外参数。')
+  }
 }
 
 async function readJsonBody(req: IncomingMessage, maxBytes = 16 * 1024): Promise<unknown> {

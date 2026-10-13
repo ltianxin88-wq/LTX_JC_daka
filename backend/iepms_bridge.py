@@ -35,8 +35,8 @@ if hasattr(sys.stdout, "reconfigure"):
 
 SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 512 * 1024
-READ_COMMANDS = {"status", "roster-summary", "roster-read", "personal-roster-read", "recent-runs", "schedule-status", "configuration-read", "personal-attendance", "personal-automation-read", "personal-makeup-read"}
-WRITE_COMMANDS = {"configuration-update", "roster-update", "personal-roster-update", "personal-account-update", "personal-run-start", "personal-schedule-update", "personal-makeup-submit"}
+READ_COMMANDS = {"status", "roster-summary", "roster-read", "personal-roster-read", "recent-runs", "schedule-status", "configuration-read", "personal-attendance", "personal-automation-read", "personal-makeup-read", "management-run-read", "management-log-read"}
+WRITE_COMMANDS = {"configuration-update", "roster-update", "personal-roster-update", "personal-account-update", "personal-run-start", "personal-schedule-update", "personal-makeup-submit", "management-run-start"}
 ALLOWED_COMMANDS = READ_COMMANDS | WRITE_COMMANDS
 SCRIPT_ROOT = Path(__file__).resolve().parent
 RUNTIME_ROOT = SCRIPT_ROOT / "runtime"
@@ -340,6 +340,14 @@ def ensure_plugin_database() -> None:
             );
             CREATE INDEX IF NOT EXISTS personal_makeup_request_account_index
             ON personal_makeup_requests(account_hash, attendance_date);
+            CREATE TABLE IF NOT EXISTS management_run_state (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                state TEXT NOT NULL,
+                pid INTEGER,
+                started_at TEXT NOT NULL DEFAULT '',
+                completed_at TEXT NOT NULL DEFAULT '',
+                message TEXT NOT NULL DEFAULT ''
+            );
         """)
         if database_setting(connection, "legacy-import-v1"):
             connection.commit()
@@ -1075,6 +1083,85 @@ def start_personal_run(settings: dict[str, Any]) -> dict[str, Any]:
     return personal_automation_view()
 
 
+def read_management_run_state() -> dict[str, Any]:
+    ensure_plugin_database()
+    connection = database_connection()
+    try:
+        row = connection.execute("SELECT state, pid, started_at, completed_at, message FROM management_run_state WHERE singleton = 1").fetchone()
+        if row is None:
+            return {"state": "idle", "lastRunAt": "", "lastCompletedAt": "", "message": "尚未执行管理巡检。"}
+        return {"state": row["state"], "lastRunAt": row["started_at"], "lastCompletedAt": row["completed_at"], "message": row["message"]}
+    finally:
+        connection.close()
+
+
+def write_management_run_state(value: dict[str, Any]) -> None:
+    ensure_plugin_database()
+    connection = database_connection()
+    try:
+        connection.execute(
+            """INSERT INTO management_run_state (singleton, state, pid, started_at, completed_at, message)
+               VALUES (1, ?, ?, ?, ?, ?)
+               ON CONFLICT(singleton) DO UPDATE SET state = excluded.state, pid = excluded.pid,
+               started_at = excluded.started_at, completed_at = excluded.completed_at, message = excluded.message""",
+            (value["state"], value.get("pid"), value["startedAt"], value.get("completedAt", ""), value["message"]),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def management_log() -> list[str]:
+    if not LOG_FILE.exists():
+        return []
+    try:
+        return [redact(line) for line in LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()[-200:]]
+    except Exception:
+        return []
+
+
+def start_management_run(settings: dict[str, Any]) -> dict[str, Any]:
+    if settings:
+        raise BridgeInputError("管理巡检不接受额外参数。")
+    current = read_management_run_state()
+    if current["state"] == "running":
+        raise BridgeInputError("管理巡检正在执行，请等待完成。")
+    started_at = datetime.now().isoformat(timespec="seconds")
+    bridge_path = Path(__file__).resolve()
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if os.name == "nt":
+        flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    try:
+        child = subprocess.Popen(
+            [sys.executable, str(bridge_path), "--management-run"], cwd=str(DATA_ROOT),
+            env={**os.environ, "IEPMS_PLUGIN_DATA_ROOT": str(DATA_ROOT), "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags,
+        )
+    except Exception as exc:
+        write_management_run_state({"state": "error", "pid": None, "startedAt": started_at, "completedAt": datetime.now().isoformat(timespec="seconds"), "message": "管理巡检启动失败。"})
+        raise BridgeInputError("管理巡检启动失败。") from exc
+    write_management_run_state({"state": "running", "pid": child.pid, "startedAt": started_at, "completedAt": "", "message": "管理巡检正在执行，可能登录 iEPMS 并发送已配置通知。"})
+    return read_management_run_state()
+
+
+def run_management_inspection() -> int:
+    started_at = datetime.now().isoformat(timespec="seconds")
+    try:
+        import iepms_attendance_monitor as monitor
+        monitor.main()
+        write_management_run_state({"state": "success", "pid": None, "startedAt": started_at, "completedAt": datetime.now().isoformat(timespec="seconds"), "message": "管理巡检已结束，请查看运行日志确认结果。"})
+        return 0
+    except Exception as exc:
+        detail = redact(str(exc)) or "未知错误"
+        try:
+            with LOG_FILE.open("a", encoding="utf-8") as stream:
+                stream.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [错误] 管理巡检启动失败: {detail}\\n")
+        except Exception:
+            pass
+        write_management_run_state({"state": "error", "pid": None, "startedAt": started_at, "completedAt": datetime.now().isoformat(timespec="seconds"), "message": f"管理巡检失败：{detail}"})
+        return 1
+
+
 def parse_personal_schedule_update(settings: dict[str, Any]) -> tuple[bool, list[str]]:
     if set(settings) != {"enabled", "times"} or not isinstance(settings.get("enabled"), bool) or not isinstance(settings.get("times"), list):
         raise BridgeInputError("个人定时配置格式无效。")
@@ -1351,6 +1438,8 @@ def main() -> int:
             "personal-attendance": personal_attendance,
             "personal-automation-read": personal_automation_view,
             "personal-makeup-read": personal_makeup_view,
+            "management-run-read": read_management_run_state,
+            "management-log-read": management_log,
             "configuration-update": lambda: update_configuration(settings or {}),
             "roster-update": lambda: update_roster(settings or {}),
             "personal-roster-update": lambda: update_personal_roster(settings or {}),
@@ -1358,6 +1447,7 @@ def main() -> int:
             "personal-run-start": lambda: start_personal_run(settings or {}),
             "personal-schedule-update": lambda: update_personal_schedule(settings or {}),
             "personal-makeup-submit": lambda: submit_personal_makeup(settings or {}),
+            "management-run-start": lambda: start_management_run(settings or {}),
         }
         return emit(command, data=handlers[command]())
     except BridgeInputError as exc:
@@ -1367,5 +1457,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(run_personal_inspection() if "--personal-run" in sys.argv[1:] else main())
+    raise SystemExit(run_personal_inspection() if "--personal-run" in sys.argv[1:] else run_management_inspection() if "--management-run" in sys.argv[1:] else main())
 
