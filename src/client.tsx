@@ -229,8 +229,11 @@ function PersonalDashboard({ value, automation, makeup, onAccountSaved, onAutoma
   const today = new Date()
   const currentMonth = monthKey(today)
   const [selectedMonth, setSelectedMonth] = useState(currentMonth)
+  const [selectedMakeupDate, setSelectedMakeupDate] = useState<string>()
   const records = value.records.filter(record => record.date.startsWith(`${selectedMonth}-`))
   const recordByDate = new Map(records.map(record => [record.date, record]))
+  const makeupByDate = new Map(makeup.items.map(item => [item.attendanceDate, item]))
+  const selectedMakeup = selectedMakeupDate === undefined ? undefined : makeupByDate.get(selectedMakeupDate)
   const todayRecord = value.records.find(record => record.date === dateKey(today))
   const attendanceDays = records.filter(record => record.status !== 'missing' && record.status !== 'pending').length
   const normalPunches = records.filter(record => record.status === 'normal' || record.status === 'checked-in').reduce((total, record) => total + Number(Boolean(record.clockIn)) + Number(Boolean(record.clockOut)), 0)
@@ -258,9 +261,15 @@ function PersonalDashboard({ value, automation, makeup, onAccountSaved, onAutoma
         <div className="iepms-calendar-days">{calendarCells(selectedMonth).map(cell => {
           const record = recordByDate.get(cell.date)
           const isToday = cell.date === dateKey(today)
-          return <div key={cell.date} className={`iepms-calendar-day${cell.inMonth ? '' : ' is-outside'}${isToday ? ' is-today' : ''}`} title={record === undefined ? cell.date : `${cell.date} ${personalStatusLabel(record.status)}`}><span>{cell.day}</span>{record !== undefined && <i className={`is-${record.status}`} aria-label={personalStatusLabel(record.status)} />}</div>
+          const makeupItem = record?.status === 'missing' ? makeupByDate.get(cell.date) : undefined
+          const className = `iepms-calendar-day${cell.inMonth ? '' : ' is-outside'}${isToday ? ' is-today' : ''}${makeupItem === undefined ? '' : ' is-actionable'}${selectedMakeupDate === cell.date ? ' is-selected' : ''}`
+          const content = <><span>{cell.day}</span>{record !== undefined && <i className={`is-${record.status}`} aria-label={personalStatusLabel(record.status)} />}{makeupItem !== undefined && <b>{makeupItem.mode === 'submitted' ? '已申请' : '补卡'}</b>}</>
+          return makeupItem === undefined
+            ? <div key={cell.date} className={className} title={record === undefined ? cell.date : `${cell.date} ${personalStatusLabel(record.status)}`}>{content}</div>
+            : <button key={cell.date} type="button" className={className} onClick={() => { setSelectedMakeupDate(cell.date) }} aria-pressed={selectedMakeupDate === cell.date} title={`${cell.date} 缺卡，${makeupItem.mode === 'submitted' ? '查看已申请记录' : '申请补卡'}`}>{content}</button>
         })}</div>
         <div className="iepms-calendar-legend"><span><i className="is-normal" />正常</span><span><i className="is-late" />迟到/早退</span><span><i className="is-missing" />缺卡</span><span><i className="is-pending" />进行中</span></div>
+        {selectedMakeup !== undefined && <section className="iepms-calendar-makeup" aria-label={`${selectedMakeup.attendanceDate} 补卡申请`}><header><span>{selectedMakeup.attendanceDate}</span><strong>{selectedMakeup.mode === 'overtime' ? '加班补卡' : selectedMakeup.mode === 'submitted' ? '已登记申请' : '补卡申请'}</strong><button type="button" onClick={() => { setSelectedMakeupDate(undefined) }} aria-label="关闭补卡申请">关闭</button></header><PersonalMakeupItemForm item={selectedMakeup} onChanged={onMakeupChanged} /></section>}
       </section>
       <section className="iepms-personal-card iepms-personal-stats"><header><IconGaugeOutline16 size={16} /><h2>月度考勤统计</h2></header>
         <StatRow label="出勤天数" value={`${attendanceDays}天`} amount={expectedDays === 0 ? 0 : attendanceDays / expectedDays} detail={`${attendanceDays} / ${expectedDays}`} tone="blue" />
@@ -271,18 +280,10 @@ function PersonalDashboard({ value, automation, makeup, onAccountSaved, onAutoma
         <StatRow label="出勤率" value={`${attendanceRate}%`} amount={attendanceRate / 100} detail={`${attendanceRate}%`} tone="blue" />
       </section>
     </div>
-    <PersonalMakeupPanel value={makeup} onChanged={onMakeupChanged} />
     <section className="iepms-personal-card iepms-personal-records"><header><IconChecklistOutline16 size={16} /><h2>最近打卡记录</h2><span>{value.configured ? `账号 ${value.accountMasked}` : '尚未配置账号'}</span></header>
       {recent.length === 0 ? <Empty text="暂无本地个人记录。巡检生成当日明细后会显示在这里。" /> : <div className="iepms-personal-table-wrap"><table><thead><tr><th>日期</th><th>上班时间</th><th>下班时间</th><th>工时</th><th>状态</th></tr></thead><tbody>{recent.map(record => <tr key={record.date}><td>{record.date.slice(5)}</td><td>{record.clockIn || '-'}</td><td>{record.clockOut || '-'}</td><td>{formatWorkMinutes(record.workMinutes)}</td><td><strong className={`is-${record.status}`}>{personalStatusLabel(record.status)}</strong></td></tr>)}</tbody></table></div>}
     </section>
   </div>
-}
-
-function PersonalMakeupPanel({ value, onChanged }: { value: PersonalMakeupView; onChanged: (value: PersonalMakeupView) => void }) {
-  return <section className="iepms-personal-card iepms-personal-makeup" aria-label="补卡申请">
-    <header><IconChecklistOutline16 size={16} /><span><h2>补卡申请</h2><small>申请记录仅保存在本地，等待接入 iEPMS 提交接口。</small></span></header>
-    {!value.configured ? <Empty text="请先配置个人考勤账号后查看补卡申请。" /> : value.items.length === 0 ? <Empty text="当前没有可申请补卡的缺卡记录。" /> : <div className="iepms-personal-makeup-list">{value.items.map(item => <PersonalMakeupItemForm key={item.attendanceDate} item={item} onChanged={onChanged} />)}</div>}
-  </section>
 }
 
 function PersonalMakeupItemForm({ item, onChanged }: { item: PersonalMakeupItem; onChanged: (value: PersonalMakeupView) => void }) {
