@@ -1,0 +1,8 @@
+# Read-only iEPMS attendance dashboard. It never schedules or runs a check at startup.
+- insert:
+    - id: iepms-attendance-plugin
+      name: 'iepms-attendance-plugin'
+      config:
+        backendRoot: 'D:/dingding/daka'
+        pythonPath: 'python'
+        bridgeTimeoutMs: 8000
