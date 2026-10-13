@@ -269,6 +269,7 @@ function PersonalDashboard({ value, automation, makeup, onAccountSaved, onAutoma
             : <button key={cell.date} type="button" className={className} onClick={() => { setSelectedMakeupDate(cell.date) }} aria-pressed={selectedMakeupDate === cell.date} title={`${cell.date} 缺卡，${makeupItem.mode === 'submitted' ? '查看已申请记录' : '申请补卡'}`}>{content}</button>
         })}</div>
         <div className="iepms-calendar-legend"><span><i className="is-normal" />正常</span><span><i className="is-late" />迟到/早退</span><span><i className="is-missing" />缺卡</span><span><i className="is-pending" />进行中</span></div>
+        <div className="iepms-calendar-makeup-legend" aria-label="补卡申请图例"><strong>补卡申请</strong><span><i className="is-makeup" />缺卡日期可点击补卡</span><span><i className="is-overtime" />超过 72 小时申请加班补卡</span><span><i className="is-submitted" />已申请可查看登记状态</span></div>
         {selectedMakeup !== undefined && <section className="iepms-calendar-makeup" aria-label={`${selectedMakeup.attendanceDate} 补卡申请`}><header><span>{selectedMakeup.attendanceDate}</span><strong>{selectedMakeup.mode === 'overtime' ? '加班补卡' : selectedMakeup.mode === 'submitted' ? '已登记申请' : '补卡申请'}</strong><button type="button" onClick={() => { setSelectedMakeupDate(undefined) }} aria-label="关闭补卡申请">关闭</button></header><PersonalMakeupItemForm item={selectedMakeup} onChanged={onMakeupChanged} /></section>}
       </section>
       <section className="iepms-personal-card iepms-personal-stats"><header><IconGaugeOutline16 size={16} /><h2>月度考勤统计</h2></header>
