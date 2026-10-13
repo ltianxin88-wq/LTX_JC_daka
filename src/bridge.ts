@@ -26,8 +26,9 @@ export class AttendanceBridge {
 
   private invoke(command: ReadCommand): Promise<BridgeResponse<unknown>> {
     return new Promise((resolveResult, reject) => {
-      const process = spawn(this.config.pythonPath, [this.bridgePath], {
+      const child = spawn(this.config.pythonPath, [this.bridgePath], {
         cwd: this.config.backendRoot,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
         windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe'],
       })
@@ -41,15 +42,15 @@ export class AttendanceBridge {
         callback()
       }
       const timer = setTimeout(() => {
-        process.kill()
+        child.kill()
         finish(() => reject(new BridgeError('BRIDGE_TIMEOUT', '读取 iEPMS 状态超时。')))
       }, this.config.bridgeTimeoutMs)
-      process.stdout.setEncoding('utf8')
-      process.stderr.setEncoding('utf8')
-      process.stdout.on('data', chunk => { if (stdout.length < MAX_STDOUT_BYTES) stdout += chunk })
-      process.stderr.on('data', chunk => { if (stderr.length < MAX_STDERR_BYTES) stderr += chunk })
-      process.on('error', () => finish(() => reject(new BridgeError('PYTHON_UNAVAILABLE', '无法启动配置的 Python 运行时。'))))
-      process.on('close', code => finish(() => {
+      child.stdout.setEncoding('utf8')
+      child.stderr.setEncoding('utf8')
+      child.stdout.on('data', chunk => { if (stdout.length < MAX_STDOUT_BYTES) stdout += chunk })
+      child.stderr.on('data', chunk => { if (stderr.length < MAX_STDERR_BYTES) stderr += chunk })
+      child.on('error', () => finish(() => reject(new BridgeError('PYTHON_UNAVAILABLE', '无法启动配置的 Python 运行时。'))))
+      child.on('close', code => finish(() => {
         if (code !== 0) return reject(new BridgeError('BRIDGE_PROCESS_FAILED', 'iEPMS 本地桥接程序执行失败。'))
         try {
           const parsed = JSON.parse(stdout) as BridgeResponse<unknown>
@@ -59,7 +60,7 @@ export class AttendanceBridge {
           reject(new BridgeError('BRIDGE_PROTOCOL_INVALID', 'iEPMS 本地桥接程序返回了无效数据。'))
         }
       }))
-      process.stdin.end(JSON.stringify({ version: 1, command }))
+      child.stdin.end(JSON.stringify({ version: 1, command }))
     })
   }
 }
