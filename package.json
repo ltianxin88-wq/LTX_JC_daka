@@ -1,6 +1,6 @@
 {
   "name": "iepms-attendance-plugin",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "iEPMS management and personal attendance dashboards for DeepSeek Harness",
   "license": "UNLICENSED",
   "type": "module",
@@ -34,11 +34,11 @@
     "pack:check": "npm run clean && npm run build && npm pack --dry-run --ignore-scripts"
   },
   "optionalDependencies": {
-    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/schemastery": "^3.18.1"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-client-ui-conversation": "0.2.0-rc.2",
     "@deepseek-ai/dsh-client-ui-layout": "0.2.0-rc.2",
     "@deepseek-ai/dsh-client-ui-primitives": "0.2.0-rc.2",
