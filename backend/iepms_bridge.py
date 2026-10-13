@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -32,9 +33,9 @@ if hasattr(sys.stdout, "reconfigure"):
 
 
 SCHEMA_VERSION = 1
-MAX_REQUEST_BYTES = 16 * 1024
-READ_COMMANDS = {"status", "roster-summary", "recent-runs", "schedule-status", "configuration-read", "personal-attendance", "personal-automation-read"}
-WRITE_COMMANDS = {"configuration-update", "personal-account-update", "personal-run-start", "personal-schedule-update"}
+MAX_REQUEST_BYTES = 512 * 1024
+READ_COMMANDS = {"status", "roster-summary", "roster-read", "personal-roster-read", "recent-runs", "schedule-status", "configuration-read", "personal-attendance", "personal-automation-read"}
+WRITE_COMMANDS = {"configuration-update", "roster-update", "personal-roster-update", "personal-account-update", "personal-run-start", "personal-schedule-update"}
 ALLOWED_COMMANDS = READ_COMMANDS | WRITE_COMMANDS
 SCRIPT_ROOT = Path(__file__).resolve().parent
 ROOT = Path(os.environ.get("IEPMS_BACKEND_ROOT", str(SCRIPT_ROOT))).resolve()
@@ -47,6 +48,13 @@ LAST_DATA_FILE = ROOT / "last_attendance_data.json"
 PERSONAL_HISTORY_FILE = ROOT / ".personal_attendance_history.json"
 PERSONAL_RUN_FILE = ROOT / ".personal_attendance_run.json"
 PERSONAL_TASK_PREFIX = "iEPMS_Personal_"
+ROSTER_BACKUP_FILE = ROOT / ".roster.backup.xlsx"
+ROSTER_FIELDS = (
+    ("projectName", "项目名称", 200), ("projectCode", "项目号", 100),
+    ("name", "姓名", 100), ("city", "地市", 100),
+    ("account", "打卡账号", 100), ("webhook", "钉钉Webhook", 2048),
+    ("mobile", "手机号", 30), ("dingtalkId", "钉钉号", 100),
+)
 
 
 def emit(command: str, data: dict[str, Any] | None = None, error: tuple[str, str] | None = None) -> int:
@@ -202,6 +210,180 @@ def write_json_atomic(path: Path, value: dict[str, Any]) -> None:
 
 def write_config_atomic(config: dict[str, Any]) -> None:
     write_json_atomic(CONFIG_FILE, config)
+
+
+def read_roster_rows() -> list[dict[str, str]]:
+    if not ROSTER_FILE.exists():
+        return []
+    try:
+        import openpyxl
+        workbook = openpyxl.load_workbook(ROSTER_FILE, read_only=True, data_only=True)
+        sheet = workbook.active
+        values = list(sheet.iter_rows(values_only=True))
+        workbook.close()
+    except Exception as exc:
+        raise BridgeInputError("花名册读取失败，请确认文件未损坏。") from exc
+    headers = [str(value or "").strip() for value in values[0]] if values else []
+    label_to_key = {label: key for key, label, _ in ROSTER_FIELDS}
+    result = []
+    for source in values[1:]:
+        row = {key: "" for key, _, _ in ROSTER_FIELDS}
+        for index, label in enumerate(headers):
+            key = label_to_key.get(label)
+            if key is None or index >= len(source):
+                continue
+            text = str(source[index] or "").strip()
+            row[key] = text[:-2] if key in {"account", "projectCode", "mobile"} and text.endswith(".0") else text
+        if any(row.values()):
+            result.append(row)
+    return result
+
+
+def roster_row_id(index: int, row: dict[str, str]) -> str:
+    payload = json.dumps({"index": index, "row": row}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+def sanitize_roster_row(index: int, row: dict[str, str]) -> dict[str, Any]:
+    return {
+        "rowId": roster_row_id(index, row),
+        **{key: value for key, value in row.items() if key != "webhook"},
+        "webhookConfigured": bool(row.get("webhook")),
+    }
+
+
+def roster_view() -> dict[str, Any]:
+    rows = read_roster_rows()
+    return {"rows": [sanitize_roster_row(index, row) for index, row in enumerate(rows)], "backupAvailable": ROSTER_BACKUP_FILE.exists()}
+
+
+def parse_roster_patch(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise BridgeInputError("花名册行格式无效。")
+    allowed = {"rowId", "projectName", "projectCode", "name", "city", "account", "mobile", "dingtalkId", "webhook", "webhookConfigured"}
+    if set(value) - allowed:
+        raise BridgeInputError("花名册包含不受支持的字段。")
+    parsed: dict[str, Any] = {}
+    row_id = value.get("rowId", "")
+    if not isinstance(row_id, str) or len(row_id) > 64:
+        raise BridgeInputError("花名册行标识无效。")
+    parsed["rowId"] = row_id
+    if "webhookConfigured" in value and not isinstance(value["webhookConfigured"], bool):
+        raise BridgeInputError("Webhook 配置状态无效。")
+    for key, _, limit in ROSTER_FIELDS:
+        if key == "webhook" and key not in value:
+            continue
+        raw = value.get(key, "")
+        if not isinstance(raw, str):
+            raise BridgeInputError("花名册字段必须是字符串。")
+        text = raw.strip()
+        if len(text) > limit:
+            raise BridgeInputError("花名册字段长度超过限制。")
+        parsed[key] = text
+    if not parsed.get("projectName") or not parsed.get("name") or not parsed.get("account"):
+        raise BridgeInputError("项目名称、姓名和打卡账号不能为空。")
+    if not re.fullmatch(r"[A-Za-z0-9_.@-]+", parsed["account"]):
+        raise BridgeInputError("打卡账号只能包含字母、数字及 . _ @ -。")
+    if "webhook" in parsed and parsed["webhook"]:
+        url = urlparse(parsed["webhook"])
+        if url.scheme != "https" or not url.netloc:
+            raise BridgeInputError("钉钉 Webhook 必须是有效的 HTTPS 地址。")
+    return parsed
+
+
+def write_roster_rows(rows: list[dict[str, str]]) -> None:
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "花名册"
+    labels = [label for _, label, _ in ROSTER_FIELDS]
+    sheet.append(labels)
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="147BE8")
+    for row in rows:
+        sheet.append([row.get(key, "") for key, _, _ in ROSTER_FIELDS])
+    widths = [28, 16, 14, 14, 18, 34, 16, 18]
+    for index, width in enumerate(widths, 1):
+        sheet.column_dimensions[openpyxl.utils.get_column_letter(index)].width = width
+    handle, temp_name = tempfile.mkstemp(prefix="roster.", suffix=".xlsx", dir=ROOT)
+    os.close(handle)
+    try:
+        workbook.save(temp_name)
+        workbook.close()
+        if ROSTER_FILE.exists():
+            shutil.copy2(ROSTER_FILE, ROSTER_BACKUP_FILE)
+        os.replace(temp_name, ROSTER_FILE)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def merge_roster_patches(patches: list[dict[str, Any]]) -> list[dict[str, str]]:
+    existing = read_roster_rows()
+    existing_by_id = {roster_row_id(index, row): row for index, row in enumerate(existing)}
+    result = []
+    seen_accounts: set[str] = set()
+    for patch in patches:
+        account = normalize_account(patch.get("account"))
+        if account in seen_accounts:
+            raise BridgeInputError(f"打卡账号 {account} 重复，请合并后再保存。")
+        seen_accounts.add(account)
+        source = existing_by_id.get(str(patch.get("rowId", "")), {})
+        row = {key: str(patch.get(key, source.get(key, ""))) for key, _, _ in ROSTER_FIELDS}
+        row["account"] = account
+        result.append(row)
+    return result
+
+
+def update_roster(settings: dict[str, Any]) -> dict[str, Any]:
+    if set(settings) != {"rows"} or not isinstance(settings.get("rows"), list):
+        raise BridgeInputError("花名册更新格式无效。")
+    if len(settings["rows"]) > 2000:
+        raise BridgeInputError("花名册最多支持 2000 行。")
+    patches = [parse_roster_patch(value) for value in settings["rows"]]
+    write_roster_rows(merge_roster_patches(patches))
+    return roster_view()
+
+
+def personal_roster_view() -> dict[str, Any]:
+    config, valid = read_config()
+    account = normalize_account(config.get("personal_account")) if valid else ""
+    if not account:
+        return {"configured": False, "row": None, "duplicateCount": 0}
+    rows = read_roster_rows()
+    matches = [(index, row) for index, row in enumerate(rows) if normalize_account(row.get("account")) == account]
+    safe_row = sanitize_roster_row(*matches[0]) if matches else None
+    if safe_row is not None:
+        safe_row["account"] = ""
+    return {"configured": True, "row": safe_row, "duplicateCount": len(matches)}
+
+
+def update_personal_roster(settings: dict[str, Any]) -> dict[str, Any]:
+    if set(settings) != {"row"}:
+        raise BridgeInputError("个人花名册更新格式无效。")
+    config, valid = read_config()
+    account = normalize_account(config.get("personal_account")) if valid else ""
+    if not account:
+        raise BridgeInputError("请先配置个人考勤账号。")
+    raw_row = dict(settings["row"]) if isinstance(settings["row"], dict) else settings["row"]
+    if isinstance(raw_row, dict):
+        raw_row["account"] = account
+    patch = parse_roster_patch(raw_row)
+    rows = read_roster_rows()
+    indexes = [index for index, row in enumerate(rows) if normalize_account(row.get("account")) == account]
+    if len(indexes) > 1:
+        raise BridgeInputError("花名册中存在多行相同个人账号，请先在管理版合并。")
+    source = rows[indexes[0]] if indexes else {}
+    merged = {key: str(patch.get(key, source.get(key, ""))) for key, _, _ in ROSTER_FIELDS}
+    merged["account"] = account
+    if indexes:
+        rows[indexes[0]] = merged
+    else:
+        rows.append(merged)
+    write_roster_rows(rows)
+    return personal_roster_view()
 
 
 def update_configuration(settings: dict[str, Any]) -> dict[str, Any]:
@@ -779,12 +961,16 @@ def main() -> int:
         handlers = {
             "status": status,
             "roster-summary": roster_summary,
+            "roster-read": roster_view,
+            "personal-roster-read": personal_roster_view,
             "recent-runs": recent_runs,
             "schedule-status": schedule_status,
             "configuration-read": configuration_view,
             "personal-attendance": personal_attendance,
             "personal-automation-read": personal_automation_view,
             "configuration-update": lambda: update_configuration(settings or {}),
+            "roster-update": lambda: update_roster(settings or {}),
+            "personal-roster-update": lambda: update_personal_roster(settings or {}),
             "personal-account-update": lambda: update_personal_account(settings or {}),
             "personal-run-start": lambda: start_personal_run(settings or {}),
             "personal-schedule-update": lambda: update_personal_schedule(settings or {}),

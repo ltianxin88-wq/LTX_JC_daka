@@ -2,8 +2,8 @@ export declare const PLUGIN_ID = "iepms-attendance-plugin";
 export declare const API_PREFIX = "/iepms-attendance-local/v1";
 export declare const CLIENT_HEADER = "x-iepms-attendance-client";
 export declare const CLIENT_NAME = "dashboard-web";
-export type ReadCommand = 'status' | 'roster-summary' | 'recent-runs' | 'schedule-status' | 'configuration-read' | 'personal-attendance' | 'personal-automation-read';
-export type BridgeCommand = ReadCommand | 'configuration-update' | 'personal-account-update' | 'personal-run-start' | 'personal-schedule-update';
+export type ReadCommand = 'status' | 'roster-summary' | 'roster-read' | 'personal-roster-read' | 'recent-runs' | 'schedule-status' | 'configuration-read' | 'personal-attendance' | 'personal-automation-read';
+export type BridgeCommand = ReadCommand | 'configuration-update' | 'roster-update' | 'personal-roster-update' | 'personal-account-update' | 'personal-run-start' | 'personal-schedule-update';
 export interface BridgeResponse<T> {
     ok: boolean;
     schemaVersion: 1;
@@ -41,6 +41,33 @@ export interface RosterView {
     projectCount: number;
     personCount: number;
     rosterAvailable: boolean;
+}
+export interface RosterRow {
+    rowId: string;
+    projectName: string;
+    projectCode: string;
+    name: string;
+    city: string;
+    account: string;
+    mobile: string;
+    dingtalkId: string;
+    webhookConfigured: boolean;
+    webhook?: string;
+}
+export interface RosterTableView {
+    rows: RosterRow[];
+    backupAvailable: boolean;
+}
+export interface RosterUpdate {
+    rows: RosterRow[];
+}
+export interface PersonalRosterView {
+    configured: boolean;
+    row: RosterRow | null;
+    duplicateCount: number;
+}
+export interface PersonalRosterUpdate {
+    row: RosterRow;
 }
 export interface ScheduleTaskView {
     name: string;

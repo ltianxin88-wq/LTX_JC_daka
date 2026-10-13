@@ -28,6 +28,47 @@ async function invoke(request, root = backendRoot) {
   })
 }
 
+async function runPython(source, input = '') {
+  return new Promise((resolve, reject) => {
+    const child = spawn('python', ['-c', source], { env: { ...processEnv(), PYTHONUTF8: '1' }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', chunk => { stdout += chunk })
+    child.stderr.on('data', chunk => { stderr += chunk })
+    child.on('error', reject)
+    child.on('close', code => code === 0 ? resolve(stdout) : reject(new Error(stderr || 'python helper failed')))
+    child.stdin.end(input)
+  })
+}
+
+async function writeRoster(path, rows) {
+  await runPython([
+    'import json, sys, openpyxl',
+    'value = json.load(sys.stdin)',
+    'workbook = openpyxl.Workbook()',
+    'sheet = workbook.active',
+    'sheet.title = value["title"]',
+    'sheet.append(value["headers"])',
+    '[sheet.append(row) for row in value["rows"]]',
+    'workbook.save(value["path"])',
+  ].join('; '), JSON.stringify({
+    path, rows, title: '花名册',
+    headers: ['项目名称', '项目号', '姓名', '地市', '打卡账号', '钉钉Webhook', '手机号', '钉钉号'],
+  }))
+}
+
+async function readRoster(path) {
+  const stdout = await runPython([
+    'import json, sys, openpyxl',
+    'path = sys.stdin.read()',
+    'workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)',
+    'print(json.dumps(list(workbook.active.iter_rows(values_only=True)), ensure_ascii=False))',
+  ].join('; '), path)
+  return JSON.parse(stdout)
+}
+
 function processEnv() { return process.env }
 
 test('read-only bridge returns a sanitized status view', async () => {
@@ -196,10 +237,74 @@ test('personal run and schedule commands reject unscoped input before side effec
   }
 })
 
+test('management roster updates preserve hidden webhooks and create a backup', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'iepms-roster-'))
+  try {
+    await writeFile(join(root, 'config.json'), '{}', 'utf8')
+    await writeRoster(join(root, 'roster.xlsx'), [
+      ['Alpha', 'P-1', 'Alice', '上海', 'employee.001', 'https://example.invalid/secret-hook', '13800000000', 'ding-1'],
+    ])
+    const before = await invoke({ version: 1, command: 'roster-read' }, root)
+    assert.equal(before.ok, true)
+    assert.equal(before.data.rows.length, 1)
+    assert.equal(before.data.rows[0].webhookConfigured, true)
+    assert.equal(JSON.stringify(before).includes('secret-hook'), false)
+
+    const value = await invoke({ version: 1, command: 'roster-update', settings: { rows: [
+      { ...before.data.rows[0], city: '苏州' },
+      { rowId: '', projectName: 'Beta', projectCode: 'P-2', name: 'Bob', city: '杭州', account: 'employee.002', mobile: '', dingtalkId: '', webhookConfigured: false },
+    ] } }, root)
+    assert.equal(value.ok, true)
+    assert.equal(value.data.rows.length, 2)
+    assert.equal(value.data.backupAvailable, true)
+    assert.equal(JSON.stringify(value).includes('secret-hook'), false)
+    const stored = await readRoster(join(root, 'roster.xlsx'))
+    assert.equal(stored[1][3], '苏州')
+    assert.equal(stored[1][5], 'https://example.invalid/secret-hook')
+    assert.equal(stored[2][4], 'employee.002')
+    const backup = await readRoster(join(root, '.roster.backup.xlsx'))
+    assert.equal(backup.length, 2)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('personal roster updates exactly the row bound to the personal account', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'iepms-personal-roster-'))
+  try {
+    await writeFile(join(root, 'config.json'), JSON.stringify({ username: 'manager.user', personal_account: 'employee.001' }), 'utf8')
+    await writeRoster(join(root, 'roster.xlsx'), [
+      ['Alpha', 'P-1', 'Alice', '上海', 'employee.001', 'https://example.invalid/personal-secret', '13800000000', 'ding-1'],
+      ['Beta', 'P-2', 'Bob', '杭州', 'employee.002', '', '', ''],
+    ])
+    const before = await invoke({ version: 1, command: 'personal-roster-read' }, root)
+    assert.equal(before.data.configured, true)
+    assert.equal(before.data.duplicateCount, 1)
+    assert.equal(before.data.row.account, '')
+    assert.equal(JSON.stringify(before).includes('employee.001'), false)
+    assert.equal(JSON.stringify(before).includes('personal-secret'), false)
+
+    const value = await invoke({ version: 1, command: 'personal-roster-update', settings: { row: {
+      ...before.data.row, name: 'Alice Updated', city: '苏州', account: 'forged.account',
+    } } }, root)
+    assert.equal(value.ok, true)
+    assert.equal(value.data.row.name, 'Alice Updated')
+    assert.equal(value.data.row.account, '')
+    const stored = await readRoster(join(root, 'roster.xlsx'))
+    assert.equal(stored[1][2], 'Alice Updated')
+    assert.equal(stored[1][3], '苏州')
+    assert.equal(stored[1][4], 'employee.001')
+    assert.equal(stored[1][5], 'https://example.invalid/personal-secret')
+    assert.equal(stored[2][2], 'Bob')
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 test('plugin client is restricted to the local dashboard API', async () => {
   const source = await readFile(new URL('../src/client.tsx', import.meta.url), 'utf8')
   const contracts = await readFile(new URL('../src/contracts.ts', import.meta.url), 'utf8')
+  const bridgeSource = await readFile(new URL('../backend/iepms_bridge.py', import.meta.url), 'utf8')
+  const personalRun = bridgeSource.slice(bridgeSource.indexOf('def run_personal_inspection'), bridgeSource.indexOf('\ndef redact_log_line'))
   assert.match(source, /API_PREFIX/)
   assert.match(contracts, /iepms-attendance-local\/v1/)
-  assert.doesNotMatch(source, /run-check|refresh-session|schedule-update|dingtalk/i)
+  assert.match(source, /结果只在插件内提醒/)
+  assert.doesNotMatch(personalRun, /send_dingtalk|default_webhook|webhook_url/i)
+  assert.doesNotMatch(source, /['"](?:run-check|refresh-session|schedule-update|dingtalk)['"]/i)
 })

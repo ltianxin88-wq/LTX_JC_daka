@@ -21,7 +21,8 @@ import {
 import {
   API_PREFIX, CLIENT_HEADER, CLIENT_NAME, PLUGIN_ID,
   type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot,
-  type PersonalAttendanceRecord, type PersonalAttendanceStatus, type PersonalAttendanceView, type PersonalAutomationView,
+  type PersonalAttendanceRecord, type PersonalAttendanceStatus, type PersonalAttendanceView, type PersonalAutomationView, type PersonalRosterView,
+  type RosterRow, type RosterTableView,
 } from './contracts.js'
 import { activatePluginWorkspace, observePluginWorkspace } from './workspace-ownership.js'
 import cssText from './client.css'
@@ -206,6 +207,7 @@ function Dashboard({ snapshot, configuration, onConfigurationSaved }: { snapshot
       </section>
     </div>
     <ConfigurationEditor value={configuration} onSaved={onConfigurationSaved} />
+    <RosterManager />
     <section className="iepms-attendance-section iepms-attendance-readiness"><header><IconInspectOutline16 size={16} /><h2>本地准备状态</h2></header><ul>
       <Readiness label="配置文件" ready={statusConfig.fileAvailable && statusConfig.valid} />
       <Readiness label="本地账号配置" ready={statusConfig.accountConfigured} />
@@ -234,6 +236,7 @@ function PersonalDashboard({ value, automation, onAccountSaved, onAutomationChan
   const recent = [...value.records].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8)
   return <div className="iepms-personal-content">
     <PersonalAccountEditor value={value} onSaved={onAccountSaved} />
+    <PersonalRosterEditor key={value.accountMasked || 'unconfigured'} configured={value.configured} accountMasked={value.accountMasked} />
     <PersonalAutomationPanel value={automation} onChanged={onAutomationChanged} />
     {value.configured && !value.source.latestAvailable && <div className="iepms-personal-notice"><IconDataOutline16 size={15} /><span>暂无该账号的考勤数据。完成一次巡检后，个人版会从本地结果中整理记录。</span></div>}
     <section className="iepms-personal-metrics" aria-label="个人考勤概览">
@@ -312,6 +315,124 @@ function PersonalAccountEditor({ value, onSaved }: { value: PersonalAttendanceVi
   </section>
 }
 
+function blankRosterRow(): RosterRow {
+  return { rowId: '', projectName: '', projectCode: '', name: '', city: '', account: '', mobile: '', dingtalkId: '', webhookConfigured: false }
+}
+
+function RosterManager() {
+  const [rows, setRows] = useState<RosterRow[]>([])
+  const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [search, setSearch] = useState('')
+  const [page, setPage] = useState(0)
+  const [dirty, setDirty] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [backupAvailable, setBackupAvailable] = useState(false)
+  const [message, setMessage] = useState<{ kind: 'success' | 'error'; text: string }>()
+  const load = useCallback(async (): Promise<void> => {
+    setState('loading')
+    try {
+      const value = await requestApi<RosterTableView>('roster')
+      if (!isRosterTable(value)) throw new Error('花名册服务返回了无效数据。')
+      setRows(value.rows)
+      setBackupAvailable(value.backupAvailable)
+      setDirty(false)
+      setState('ready')
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : '花名册读取失败。' })
+      setState('error')
+    }
+  }, [])
+  useEffect(() => { void load() }, [load])
+  const update = (rowId: string, index: number, key: keyof RosterRow, value: string | boolean): void => {
+    setRows(current => current.map((row, rowIndex) => row.rowId === rowId && rowId ? { ...row, [key]: value } : rowIndex === index ? { ...row, [key]: value } : row))
+    setDirty(true)
+  }
+  const normalizedSearch = search.trim().toLowerCase()
+  const filtered = rows.map((row, index) => ({ row, index })).filter(({ row }) => !normalizedSearch || [row.projectName, row.projectCode, row.name, row.city, row.account, row.mobile, row.dingtalkId].some(value => value.toLowerCase().includes(normalizedSearch)))
+  const pageSize = 15
+  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize))
+  const safePage = Math.min(page, pageCount - 1)
+  const visible = filtered.slice(safePage * pageSize, (safePage + 1) * pageSize)
+  const save = async (): Promise<void> => {
+    setSaving(true)
+    setMessage(undefined)
+    try {
+      const value = await requestApi<RosterTableView>('roster', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rows }) })
+      if (!isRosterTable(value)) throw new Error('花名册服务返回了无效数据。')
+      setRows(value.rows)
+      setBackupAvailable(value.backupAvailable)
+      setDirty(false)
+      setMessage({ kind: 'success', text: `花名册已保存，共 ${value.rows.length} 行。` })
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : '花名册保存失败。' })
+    } finally { setSaving(false) }
+  }
+  return <section className="iepms-attendance-section iepms-roster-manager" aria-label="员工花名册管理">
+    <header><IconChecklistOutline16 size={16} /><h2>员工花名册</h2><span>{state === 'ready' ? `${rows.length} 行${backupAvailable ? ' · 已保留上次备份' : ''}` : '正在读取'}</span><button type="button" onClick={() => { setRows(current => [...current, blankRosterRow()]); setPage(Math.floor(rows.length / pageSize)); setDirty(true) }}>新增一行</button><button type="button" className="is-primary" disabled={!dirty || saving || state !== 'ready'} onClick={() => { void save() }}>{saving ? '保存中…' : '保存花名册'}</button></header>
+    <div className="iepms-roster-toolbar"><input type="search" value={search} onChange={event => { setSearch(event.target.value); setPage(0) }} placeholder="搜索项目、姓名、地市或账号" /><p>Webhook 原文不回显；留空保留，点击清除后保存才会删除。</p></div>
+    {state === 'error' ? <div className="iepms-roster-error"><p>{message?.text}</p><button type="button" onClick={() => { void load() }}>重试</button></div> : <div className="iepms-roster-table-wrap"><table><thead><tr><th>项目名称*</th><th>项目号</th><th>姓名*</th><th>地市</th><th>打卡账号*</th><th>手机号</th><th>钉钉号</th><th>钉钉 Webhook</th><th>操作</th></tr></thead><tbody>{visible.map(({ row, index }) => <tr key={row.rowId || `new-${index}`}>
+      <td><input value={row.projectName} onChange={event => { update(row.rowId, index, 'projectName', event.target.value) }} /></td>
+      <td><input value={row.projectCode} onChange={event => { update(row.rowId, index, 'projectCode', event.target.value) }} /></td>
+      <td><input value={row.name} onChange={event => { update(row.rowId, index, 'name', event.target.value) }} /></td>
+      <td><input value={row.city} onChange={event => { update(row.rowId, index, 'city', event.target.value) }} /></td>
+      <td><input value={row.account} onChange={event => { update(row.rowId, index, 'account', event.target.value) }} /></td>
+      <td><input value={row.mobile} onChange={event => { update(row.rowId, index, 'mobile', event.target.value) }} /></td>
+      <td><input value={row.dingtalkId} onChange={event => { update(row.rowId, index, 'dingtalkId', event.target.value) }} /></td>
+      <td><div className="iepms-roster-webhook"><input type="password" value={row.webhook ?? ''} onChange={event => { update(row.rowId, index, 'webhook', event.target.value) }} placeholder={row.webhookConfigured ? '已配置，留空保留' : '未配置'} />{row.webhookConfigured && row.webhook === undefined && <button type="button" onClick={() => { update(row.rowId, index, 'webhook', ''); update(row.rowId, index, 'webhookConfigured', false) }}>清除</button>}</div></td>
+      <td><button type="button" className="iepms-roster-delete" onClick={() => { setRows(current => current.filter((_, rowIndex) => rowIndex !== index)); setDirty(true) }}>删除</button></td>
+    </tr>)}</tbody></table>{state === 'loading' && <p className="iepms-attendance-empty">正在读取花名册…</p>}{state === 'ready' && visible.length === 0 && <p className="iepms-attendance-empty">没有匹配的花名册数据。</p>}</div>}
+    <footer><span>第 {safePage + 1} / {pageCount} 页 · 当前筛选 {filtered.length} 行</span><div><button type="button" disabled={safePage === 0} onClick={() => { setPage(value => Math.max(0, value - 1)) }}>上一页</button><button type="button" disabled={safePage >= pageCount - 1} onClick={() => { setPage(value => Math.min(pageCount - 1, value + 1)) }}>下一页</button></div></footer>
+    {message !== undefined && state !== 'error' && <p className={`iepms-roster-message is-${message.kind}`} role={message.kind === 'error' ? 'alert' : 'status'}>{message.text}</p>}
+  </section>
+}
+
+function PersonalRosterEditor({ configured, accountMasked }: { configured: boolean; accountMasked: string }) {
+  const [row, setRow] = useState<RosterRow>(blankRosterRow())
+  const [state, setState] = useState<'loading' | 'ready' | 'error'>(configured ? 'loading' : 'ready')
+  const [editing, setEditing] = useState(false)
+  const [duplicateCount, setDuplicateCount] = useState(0)
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState<{ kind: 'success' | 'error'; text: string }>()
+  useEffect(() => {
+    if (!configured) return
+    void requestApi<PersonalRosterView>('personal-roster').then(value => {
+      if (!isPersonalRoster(value)) throw new Error('个人资料服务返回了无效数据。')
+      setRow(value.row ?? blankRosterRow())
+      setDuplicateCount(value.duplicateCount)
+      setEditing(value.row === null)
+      setState('ready')
+    }).catch(error => { setState('error'); setMessage({ kind: 'error', text: error instanceof Error ? error.message : '个人资料读取失败。' }) })
+  }, [configured])
+  const change = (key: keyof RosterRow, value: string | boolean): void => { setRow(current => ({ ...current, [key]: value })) }
+  const save = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault()
+    setSaving(true)
+    setMessage(undefined)
+    try {
+      const value = await requestApi<PersonalRosterView>('personal-roster', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ row }) })
+      if (!isPersonalRoster(value) || value.row === null) throw new Error('个人资料服务返回了无效数据。')
+      setRow(value.row)
+      setDuplicateCount(value.duplicateCount)
+      setEditing(false)
+      setMessage({ kind: 'success', text: '个人花名册资料已保存。' })
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : '个人资料保存失败。' })
+    } finally { setSaving(false) }
+  }
+  if (!configured) return null
+  if (state === 'loading') return <section className="iepms-personal-profile"><p>正在读取个人花名册资料…</p></section>
+  if (!editing && state === 'ready') return <section className="iepms-personal-profile is-summary" aria-label="个人花名册资料"><IconChecklistOutline16 size={16} /><div><strong>个人花名册资料</strong><span>{row.name || '未填写姓名'} · {row.projectName || '未填写项目'} · 账号 {accountMasked}</span></div>{message !== undefined && <p className={`is-${message.kind}`}>{message.text}</p>}<button type="button" onClick={() => { setEditing(true); setMessage(undefined) }}>编辑资料</button></section>
+  return <section className="iepms-personal-profile" aria-label="个人花名册资料"><header><IconChecklistOutline16 size={16} /><span><strong>个人花名册资料</strong><small>只维护账号 {accountMasked} 对应的一行</small></span></header><form onSubmit={event => { void save(event) }}>
+    <label><span>项目名称*</span><input value={row.projectName} onChange={event => { change('projectName', event.target.value) }} /></label>
+    <label><span>项目号</span><input value={row.projectCode} onChange={event => { change('projectCode', event.target.value) }} /></label>
+    <label><span>姓名*</span><input value={row.name} onChange={event => { change('name', event.target.value) }} /></label>
+    <label><span>地市</span><input value={row.city} onChange={event => { change('city', event.target.value) }} /></label>
+    <label><span>手机号</span><input value={row.mobile} onChange={event => { change('mobile', event.target.value) }} /></label>
+    <label><span>钉钉号</span><input value={row.dingtalkId} onChange={event => { change('dingtalkId', event.target.value) }} /></label>
+    <div className="iepms-personal-profile-actions">{row.rowId && <button type="button" className="is-secondary" onClick={() => { setEditing(false); setMessage(undefined) }}>取消</button>}<button type="submit" disabled={saving || duplicateCount > 1}>{saving ? '保存中…' : '保存个人资料'}</button></div>
+  </form>{duplicateCount > 1 && <p className="iepms-personal-profile-message is-error">当前账号存在 {duplicateCount} 行，请先到管理版合并。</p>}{message !== undefined && <p className={`iepms-personal-profile-message is-${message.kind}`} role={message.kind === 'error' ? 'alert' : 'status'}>{message.text}</p>}</section>
+}
+
 function PersonalAutomationPanel({ value, onChanged }: { value: PersonalAutomationView; onChanged: (value: PersonalAutomationView) => void }) {
   const initialTimes = value.schedule.times.length > 0 ? value.schedule.times : ['09:15', '18:15']
   const [enabled, setEnabled] = useState(value.schedule.enabled)
@@ -358,7 +479,7 @@ function PersonalAutomationPanel({ value, onChanged }: { value: PersonalAutomati
   const stateText = running ? '执行中' : value.state === 'success' ? '上次成功' : value.state === 'error' ? '上次失败' : '尚未执行'
   return <section className="iepms-personal-automation" aria-label="个人巡检设置">
     <header>
-      <div><IconInspectOutline16 size={17} /><span><strong>个人巡检</strong><small>仅同步当前个人账号，不发送钉钉通知</small></span></div>
+      <div><IconInspectOutline16 size={17} /><span><strong>个人巡检</strong><small>仅同步当前个人账号，结果只在插件内提醒</small></span></div>
       <div className={`iepms-personal-run-state is-${value.state}`}><i />{stateText}{value.lastCompletedAt && <time>{value.lastCompletedAt.replace('T', ' ')}</time>}</div>
       <button type="button" className="iepms-personal-run-now" disabled={!ready || running || starting} onClick={() => { void start() }}>{running || starting ? '巡检中…' : '立即巡检'}</button>
     </header>
@@ -370,7 +491,7 @@ function PersonalAutomationPanel({ value, onChanged }: { value: PersonalAutomati
     </div>
     {!value.accountConfigured && <p className="iepms-personal-automation-hint is-error">请先配置个人考勤账号。</p>}
     {value.accountConfigured && !value.loginReady && <p className="iepms-personal-automation-hint is-error">执行巡检需要登录 iEPMS，请先在管理版配置登录账号和密码。</p>}
-    {value.message && <p className={`iepms-personal-automation-hint is-${value.state === 'error' ? 'error' : 'status'}`}>{value.message}</p>}
+    {value.message && <p className={`iepms-personal-automation-hint is-${value.state === 'error' ? 'error' : 'status'}`} role={value.state === 'error' ? 'alert' : 'status'}>插件提醒：{value.message}</p>}
     {message !== undefined && <p className={`iepms-personal-automation-hint is-${message.kind}`} role={message.kind === 'error' ? 'alert' : 'status'}>{message.text}</p>}
   </section>
 }
@@ -474,6 +595,21 @@ function isPersonalAutomation(value: unknown): value is PersonalAutomationView {
   if (value === null || typeof value !== 'object' || !('state' in value) || !('schedule' in value)) return false
   const record = value as Partial<PersonalAutomationView>
   return ['idle', 'running', 'success', 'error'].includes(String(record.state)) && typeof record.accountConfigured === 'boolean' && typeof record.loginReady === 'boolean' && record.schedule !== undefined && typeof record.schedule.enabled === 'boolean' && Array.isArray(record.schedule.times)
+}
+function isRosterRow(value: unknown): value is RosterRow {
+  if (value === null || typeof value !== 'object') return false
+  const row = value as Partial<RosterRow>
+  return ['rowId', 'projectName', 'projectCode', 'name', 'city', 'account', 'mobile', 'dingtalkId'].every(key => typeof (row as unknown as Record<string, unknown>)[key] === 'string') && typeof row.webhookConfigured === 'boolean'
+}
+function isRosterTable(value: unknown): value is RosterTableView {
+  if (value === null || typeof value !== 'object' || !('rows' in value)) return false
+  const table = value as Partial<RosterTableView>
+  return Array.isArray(table.rows) && table.rows.every(isRosterRow) && typeof table.backupAvailable === 'boolean'
+}
+function isPersonalRoster(value: unknown): value is PersonalRosterView {
+  if (value === null || typeof value !== 'object' || !('configured' in value)) return false
+  const result = value as Partial<PersonalRosterView>
+  return typeof result.configured === 'boolean' && typeof result.duplicateCount === 'number' && (result.row === null || isRosterRow(result.row))
 }
 
 function dateKey(value: Date): string { return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}` }

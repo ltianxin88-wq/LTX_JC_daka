@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { AttendanceBridge, BridgeError } from './bridge.js'
 import {
   API_PREFIX, CLIENT_HEADER, CLIENT_NAME,
-  type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type PersonalAccountUpdate, type PersonalAttendanceView, type PersonalAutomationView, type PersonalScheduleUpdate, type ReadCommand, type RecentRunView, type RosterView, type ScheduleView, type StatusView,
+  type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type PersonalAccountUpdate, type PersonalAttendanceView, type PersonalAutomationView, type PersonalRosterUpdate, type PersonalRosterView, type PersonalScheduleUpdate, type ReadCommand, type RecentRunView, type RosterTableView, type RosterUpdate, type RosterView, type ScheduleView, type StatusView,
 } from './contracts.js'
 import type { RuntimeContextLike } from './runtime.js'
 
@@ -31,6 +31,12 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, bridge: Atten
   if (path === 'personal-automation' && method === 'GET') {
     return sendJson(res, 200, await bridge.read<PersonalAutomationView>('personal-automation-read'))
   }
+  if (path === 'roster' && method === 'GET') {
+    return sendJson(res, 200, await bridge.read<RosterTableView>('roster-read'))
+  }
+  if (path === 'personal-roster' && method === 'GET') {
+    return sendJson(res, 200, await bridge.read<PersonalRosterView>('personal-roster-read'))
+  }
   if (path === 'configuration' && method === 'PUT') {
     const settings = validateConfigurationUpdate(await readJsonBody(req))
     return sendJson(res, 200, await bridge.updateConfiguration(settings))
@@ -45,6 +51,14 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, bridge: Atten
   if (path === 'personal-schedule' && method === 'PUT') {
     const settings = validatePersonalScheduleUpdate(await readJsonBody(req))
     return sendJson(res, 200, await bridge.updatePersonalSchedule(settings))
+  }
+  if (path === 'roster' && method === 'PUT') {
+    const settings = validateRosterUpdate(await readJsonBody(req, 512 * 1024))
+    return sendJson(res, 200, await bridge.updateRoster(settings))
+  }
+  if (path === 'personal-roster' && method === 'PUT') {
+    const settings = validatePersonalRosterUpdate(await readJsonBody(req))
+    return sendJson(res, 200, await bridge.updatePersonalRoster(settings))
   }
   if (method !== 'GET') throw httpError(405, '该考勤接口不支持此请求方式。')
   if (path === 'health') return sendJson(res, 200, { ok: true, mode: 'read-only', service: 'iepms-attendance-plugin' })
@@ -61,7 +75,7 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, bridge: Atten
   throw httpError(404, '考勤状态接口不存在。')
 }
 
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+async function readJsonBody(req: IncomingMessage, maxBytes = 16 * 1024): Promise<unknown> {
   const contentType = String(req.headers['content-type'] ?? '').toLowerCase()
   if (!contentType.startsWith('application/json')) throw httpError(415, '配置请求必须使用 JSON。')
   const chunks: Buffer[] = []
@@ -69,7 +83,7 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   for await (const chunk of req) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
     size += buffer.length
-    if (size > 16 * 1024) throw httpError(413, '配置请求过大。')
+    if (size > maxBytes) throw httpError(413, '配置请求过大。')
     chunks.push(buffer)
   }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) }
@@ -110,6 +124,33 @@ function validatePersonalScheduleUpdate(value: unknown): PersonalScheduleUpdate 
   if (times.some(value => !/^(?:[01]\d|2[0-3]):[0-5]\d$/u.test(value))) throw httpError(400, '巡检时间必须使用 HH:MM 格式。')
   if (record.enabled && times.length === 0) throw httpError(400, '启用定时巡检时至少需要一个时间。')
   return { enabled: record.enabled, times }
+}
+
+function validateRosterRow(value: unknown): RosterUpdate['rows'][number] {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw httpError(400, '花名册行格式无效。')
+  const source = value as Record<string, unknown>
+  const allowed = new Set(['rowId', 'projectName', 'projectCode', 'name', 'city', 'account', 'mobile', 'dingtalkId', 'webhook', 'webhookConfigured'])
+  if (Object.keys(source).some(key => !allowed.has(key))) throw httpError(400, '花名册包含不受支持的字段。')
+  for (const key of ['rowId', 'projectName', 'projectCode', 'name', 'city', 'account', 'mobile', 'dingtalkId'] as const) {
+    if (typeof source[key] !== 'string') throw httpError(400, '花名册字段必须是字符串。')
+  }
+  if (source.webhook !== undefined && typeof source.webhook !== 'string') throw httpError(400, 'Webhook 必须是字符串。')
+  if (typeof source.webhookConfigured !== 'boolean') throw httpError(400, 'Webhook 配置状态无效。')
+  return source as unknown as RosterUpdate['rows'][number]
+}
+
+function validateRosterUpdate(value: unknown): RosterUpdate {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw httpError(400, '花名册更新格式无效。')
+  const record = value as Record<string, unknown>
+  if (Object.keys(record).length !== 1 || !Array.isArray(record.rows) || record.rows.length > 2000) throw httpError(400, '花名册更新格式无效。')
+  return { rows: record.rows.map(validateRosterRow) }
+}
+
+function validatePersonalRosterUpdate(value: unknown): PersonalRosterUpdate {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw httpError(400, '个人资料更新格式无效。')
+  const record = value as Record<string, unknown>
+  if (Object.keys(record).length !== 1) throw httpError(400, '个人版只能维护一行数据。')
+  return { row: validateRosterRow(record.row) }
 }
 
 function assertBrowserRequest(req: IncomingMessage): void {
