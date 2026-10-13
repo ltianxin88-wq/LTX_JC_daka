@@ -87,7 +87,7 @@ test('read-only bridge returns a sanitized status view', async () => {
   assert.equal(value.ok, true)
   assert.equal(value.schemaVersion, 1)
   assert.equal(value.command, 'status')
-  assert.equal(value.data.application.name, 'iEPMS 考勤自动监控系统')
+  assert.equal(value.data.application.name, '插件内置后端')
   assert.equal(value.data.safety.mode, 'read-only')
   assert.equal(value.data.safety.automaticActionsEnabled, false)
   assert.equal(typeof value.data.configuration.accountConfigured, 'boolean')

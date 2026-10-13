@@ -143,7 +143,7 @@ def status() -> dict[str, Any]:
     config, valid = read_config()
     export_settings = config.get("export_settings") if isinstance(config.get("export_settings"), dict) else {}
     return {
-        "application": {"name": "iEPMS 考勤自动监控系统", "version": version(), "dataRootAvailable": DATA_ROOT.exists()},
+        "application": {"name": "插件内置后端", "version": version(), "dataRootAvailable": DATA_ROOT.exists()},
         "configuration": {
             "fileAvailable": CONFIG_FILE.exists(),
             "valid": valid,
