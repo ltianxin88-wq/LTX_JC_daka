@@ -7,6 +7,7 @@ export declare class AttendanceBridge {
     readonly automationRequirementsPath: string;
     private coreRuntime;
     private automationRuntime;
+    private invocationQueue;
     private runtimeStatus;
     constructor(config: Config);
     read<T>(command: ReadCommand): Promise<T>;

@@ -1,6 +1,6 @@
 {
   "name": "iepms-attendance-plugin",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "description": "iEPMS management and personal attendance dashboards for DeepSeek Harness",
   "license": "UNLICENSED",
   "type": "module",

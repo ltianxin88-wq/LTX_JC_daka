@@ -16,6 +16,7 @@ export class AttendanceBridge {
   readonly automationRequirementsPath: string
   private coreRuntime: Promise<RuntimeBootstrapResult> | undefined
   private automationRuntime: Promise<RuntimeBootstrapResult> | undefined
+  private invocationQueue: Promise<void> = Promise.resolve()
   private runtimeStatus: RuntimePreparationView = { phase: 'idle', progress: 0, detail: '等待准备运行环境', updatedAt: new Date().toISOString() }
 
   constructor(private readonly config: Config) {
@@ -139,9 +140,14 @@ export class AttendanceBridge {
   }
 
   private async invoke(command: BridgeCommand, settings?: ConfigurationUpdate | ManagementAnalyticsFilter | PersonalAccountUpdate | PersonalScheduleUpdate | PersonalReminderSettingsUpdate | PersonalReminderDeliveryReserve | PersonalReminderDeliveryComplete | PersonalStartupClaim | PersonalMakeupSubmit | RosterUpdate | PersonalRosterUpdate | Record<string, never>): Promise<BridgeResponse<unknown>> {
-    const enablesPersonalSchedule = command === 'personal-schedule-update' && (settings as PersonalScheduleUpdate | undefined)?.enabled === true
-    const runtime = await this.prepareRuntime(AUTOMATION_COMMANDS.has(command) || enablesPersonalSchedule ? 'automation' : 'core')
-    return new Promise((resolveResult, reject) => {
+    const previous = this.invocationQueue
+    let release: () => void = () => {}
+    this.invocationQueue = new Promise(resolveQueue => { release = resolveQueue })
+    await previous
+    try {
+      const enablesPersonalSchedule = command === 'personal-schedule-update' && (settings as PersonalScheduleUpdate | undefined)?.enabled === true
+      const runtime = await this.prepareRuntime(AUTOMATION_COMMANDS.has(command) || enablesPersonalSchedule ? 'automation' : 'core')
+      return await new Promise((resolveResult, reject) => {
       const child = spawn(runtime.pythonPath, [this.bridgePath], {
         cwd: this.config.dataRoot,
         env: { ...runtime.environment, IEPMS_PLUGIN_DATA_ROOT: this.config.dataRoot, IEPMS_LEGACY_IMPORT_ROOT: this.config.legacyImportRoot, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
@@ -179,7 +185,10 @@ export class AttendanceBridge {
         }
       }))
       child.stdin.end(JSON.stringify(settings === undefined ? { version: 1, command } : { version: 1, command, settings }))
-    })
+      })
+    } finally {
+      release()
+    }
   }
 
   private prepareRuntime(tier: RuntimeDependencyTier): Promise<RuntimeBootstrapResult> {

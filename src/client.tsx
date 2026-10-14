@@ -175,7 +175,12 @@ function AttendancePanel({ workspace }: { workspace?: WorkspaceController }) {
     const timer = window.setInterval(() => { void loadPersonal(true) }, 3000)
     return () => { window.clearInterval(timer) }
   }, [loadPersonal, personalAutomation?.state, view])
-  return <section className="iepms-attendance-workspace" aria-labelledby="iepms-attendance-title">
+  return <section
+    className="iepms-attendance-workspace"
+    aria-labelledby="iepms-attendance-title"
+    onKeyDownCapture={event => { event.stopPropagation() }}
+    onKeyUpCapture={event => { event.stopPropagation() }}
+  >
     <header className="iepms-attendance-header">
       <div>
         {workspace !== undefined && <button type="button" className="iepms-attendance-back" onClick={workspace.close} aria-label="返回对话" title="返回对话"><IconChevronLeftOutline16 size={16} /></button>}
