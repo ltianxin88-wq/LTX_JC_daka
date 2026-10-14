@@ -463,6 +463,7 @@ test('plugin client is restricted to the local dashboard API', async () => {
   const personalRun = bridgeSource.slice(bridgeSource.indexOf('def run_personal_inspection'), bridgeSource.indexOf('\ndef redact_log_line'))
   assert.match(source, /API_PREFIX/)
   assert.match(source, /iepms-attendance-scroll/)
+  assert.match(source, /个人信息请联系对应办事处人事或项目经理获取/)
   assert.match(source, /onKeyDownCapture=.*stopPropagation/)
   assert.match(source, /onKeyUpCapture=.*stopPropagation/)
   assert.match(styles, /\.iepms-attendance-scroll[^}]*overflow-y:auto/)

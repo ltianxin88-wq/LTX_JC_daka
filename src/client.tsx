@@ -647,7 +647,7 @@ function PersonalRosterEditor({ configured, accountMasked }: { configured: boole
   if (!configured) return null
   if (state === 'loading') return <section className="iepms-personal-profile"><p>正在读取个人花名册资料…</p></section>
   if (!editing && state === 'ready') return <section className="iepms-personal-profile is-summary" aria-label="个人花名册资料"><IconChecklistOutline16 size={16} /><div><strong>个人花名册资料</strong><span>{row.name || '未填写姓名'} · {row.projectName || '未填写项目'} · 账号 {accountMasked}</span></div>{message !== undefined && <p className={`is-${message.kind}`}>{message.text}</p>}<button type="button" onClick={() => { setEditing(true); setMessage(undefined) }}>编辑资料</button></section>
-  return <section className="iepms-personal-profile" aria-label="个人花名册资料"><header><IconChecklistOutline16 size={16} /><span><strong>个人花名册资料</strong><small>只维护账号 {accountMasked} 对应的一行</small></span></header><form onSubmit={event => { void save(event) }}>
+  return <section className="iepms-personal-profile" aria-label="个人花名册资料"><header><IconChecklistOutline16 size={16} /><span><strong>个人花名册资料</strong><small>只维护账号 {accountMasked} 对应的一行</small></span></header><p className="iepms-personal-profile-help">个人信息请联系对应办事处人事或项目经理获取。</p><form onSubmit={event => { void save(event) }}>
     <label><span>项目名称*</span><input value={row.projectName} onChange={event => { change('projectName', event.target.value) }} /></label>
     <label><span>项目号</span><input value={row.projectCode} onChange={event => { change('projectCode', event.target.value) }} /></label>
     <label><span>姓名*</span><input value={row.name} onChange={event => { change('name', event.target.value) }} /></label>
