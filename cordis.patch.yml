@@ -1,4 +1,5 @@
-# Read-only iEPMS attendance dashboard. It never schedules or runs a check at startup.
+# iEPMS attendance dashboard. Startup checks remain opt-in; the public personal
+# inspection service only accepts an explicitly user-initiated request.
 - insert:
     - id: iepms-attendance-plugin
       name: 'iepms-attendance-plugin'

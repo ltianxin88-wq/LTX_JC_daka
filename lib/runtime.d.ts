@@ -8,7 +8,8 @@ export interface WebServerLike {
 }
 export interface RuntimeContextLike {
     webServer?: WebServerLike;
-    get(name: string): unknown;
+    provide?<T>(name: string, value: T): void;
+    get(name: string, strict?: boolean): unknown;
     logger: {
         info(message: unknown): void;
         warn(message: unknown): void;
