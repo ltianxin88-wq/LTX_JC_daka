@@ -3,8 +3,10 @@ import type { ConfigurationUpdate, ConfigurationView, ManagementAnalyticsFilter,
 export declare class AttendanceBridge {
     private readonly config;
     readonly bridgePath: string;
-    readonly requirementsPath: string;
-    private runtime;
+    readonly coreRequirementsPath: string;
+    readonly automationRequirementsPath: string;
+    private coreRuntime;
+    private automationRuntime;
     private runtimeStatus;
     constructor(config: Config);
     read<T>(command: ReadCommand): Promise<T>;
@@ -25,6 +27,7 @@ export declare class AttendanceBridge {
     submitPersonalMakeup(settings: PersonalMakeupSubmit): Promise<PersonalMakeupView>;
     private invoke;
     private prepareRuntime;
+    private runtimeError;
 }
 export declare class BridgeError extends Error {
     readonly code: string;

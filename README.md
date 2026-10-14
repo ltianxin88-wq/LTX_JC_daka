@@ -2,7 +2,7 @@
 
 `iepms-attendance-plugin` adds a local attendance-monitoring and secure configuration panel to DeepSeek Harness.
 
-Version 0.8.1 is self-contained: its Python bridge and login, credential, monitoring, scheduling and attendance support modules are packaged under `backend/`. Runtime data is stored under `%LOCALAPPDATA%\DeepSeek Harness\plugins\iepms-attendance-plugin` by default, including the SQLite database, roster, configuration, session and local history. It does not import or execute code from `D:\dingding\daka`.
+Version 0.8.2 is self-contained: its Python bridge and login, credential, monitoring, scheduling and attendance support modules are packaged under `backend/`. Runtime data is stored under `%LOCALAPPDATA%\DeepSeek Harness\plugins\iepms-attendance-plugin` by default, including the SQLite database, roster, configuration, session and local history. It does not import or execute code from `D:\dingding\daka`.
 
 The dashboard opens in personal mode. Management data, configuration, roster maintenance, inspection, and analytics endpoints require a server-validated management authorization. The configured code is stored in the package only as a SHA-256 digest. Successful verification issues a random in-memory token that expires after 12 hours and is lost when the desktop runtime restarts; the browser keeps that token only in the current page session.
 
@@ -18,7 +18,7 @@ The personal view also provides a local make-up punch register for records ident
 
 The package intentionally uses Cordis and Schemastery from the DSH host runtime. It must be installed into a DSH Desktop profile, not run as a standalone Node application.
 
-On first use, the plugin creates a private Python virtual environment under its own data directory and automatically installs missing dependencies there. It uses the Aliyun HTTPS Python mirror by default and falls back to the official PyPI index, so users do not need to run `pip install` or manage a virtual environment. A usable system Python runtime is still required; shipping that interpreter inside the DSH Desktop installer is a separate desktop-distribution concern.
+On first use, the plugin creates a private Python virtual environment under its own data directory and installs only the lightweight dashboard dependencies. Browser automation, NumPy and headless OpenCV are installed lazily when the user first starts an immediate inspection, a management inspection, or enables personal scheduling. Downloads bypass the shared pip cache to avoid leaving a second copy of large wheels on disk. The plugin uses the Aliyun HTTPS Python mirror by default and falls back to the official PyPI index, so users do not need to run `pip install` or manage a virtual environment. A usable system Python runtime is still required; shipping that interpreter inside the DSH Desktop installer is a separate desktop-distribution concern.
 
 ## Development
 
@@ -36,6 +36,6 @@ $env:IEPMS_PLUGIN_DATA_ROOT="$env:TEMP\iepms-attendance-plugin-test"
 '{"version":1,"command":"status"}' | python .\backend\iepms_bridge.py
 ```
 
-The packaged Python dependencies are listed in `backend/requirements.txt`. `legacyImportRoot` is optional and only imports existing data once; it is never used as a runtime module path.
+The lightweight dashboard dependencies are listed in `backend/requirements.txt`; the on-demand inspection dependencies are listed in `backend/requirements-automation.txt`. `legacyImportRoot` is optional and only imports existing data once; it is never used as a runtime module path.
 
 See `DEVELOPMENT_PLAN.md` for the staged implementation plan.

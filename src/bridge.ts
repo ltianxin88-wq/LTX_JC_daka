@@ -4,21 +4,25 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Config } from './config.js'
 import type { BridgeCommand, BridgeResponse, ConfigurationUpdate, ConfigurationView, ManagementAnalyticsFilter, ManagementAnalyticsPersonView, ManagementAnalyticsView, ManagementRunView, PersonalAccountUpdate, PersonalAttendanceView, PersonalAutomationView, PersonalMakeupSubmit, PersonalMakeupView, PersonalReminderDeliveryComplete, PersonalReminderDeliveryReservation, PersonalReminderDeliveryReserve, PersonalReminderSettingsUpdate, PersonalRosterUpdate, PersonalRosterView, PersonalScheduleUpdate, PersonalStartupClaim, PersonalStartupClaimResult, ReadCommand, RosterTableView, RosterUpdate, RuntimePreparationView } from './contracts.js'
-import { prepareRuntime, RuntimeBootstrapError, type RuntimeBootstrapResult } from './runtime-bootstrap.js'
+import { prepareRuntime, RuntimeBootstrapError, type RuntimeDependencyTier, type RuntimeBootstrapResult } from './runtime-bootstrap.js'
 
 const MAX_STDOUT_BYTES = 2 * 1024 * 1024
 const MAX_STDERR_BYTES = 16 * 1024
+const AUTOMATION_COMMANDS = new Set<BridgeCommand>(['personal-run-start', 'management-run-start'])
 
 export class AttendanceBridge {
   readonly bridgePath: string
-  readonly requirementsPath: string
-  private runtime: Promise<RuntimeBootstrapResult> | undefined
+  readonly coreRequirementsPath: string
+  readonly automationRequirementsPath: string
+  private coreRuntime: Promise<RuntimeBootstrapResult> | undefined
+  private automationRuntime: Promise<RuntimeBootstrapResult> | undefined
   private runtimeStatus: RuntimePreparationView = { phase: 'idle', progress: 0, detail: '等待准备运行环境', updatedAt: new Date().toISOString() }
 
   constructor(private readonly config: Config) {
     const bundledRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../backend')
     this.bridgePath = resolve(bundledRoot, 'iepms_bridge.py')
-    this.requirementsPath = resolve(bundledRoot, 'requirements.txt')
+    this.coreRequirementsPath = resolve(bundledRoot, 'requirements.txt')
+    this.automationRequirementsPath = resolve(bundledRoot, 'requirements-automation.txt')
     mkdirSync(config.dataRoot, { recursive: true })
   }
 
@@ -135,7 +139,8 @@ export class AttendanceBridge {
   }
 
   private async invoke(command: BridgeCommand, settings?: ConfigurationUpdate | ManagementAnalyticsFilter | PersonalAccountUpdate | PersonalScheduleUpdate | PersonalReminderSettingsUpdate | PersonalReminderDeliveryReserve | PersonalReminderDeliveryComplete | PersonalStartupClaim | PersonalMakeupSubmit | RosterUpdate | PersonalRosterUpdate | Record<string, never>): Promise<BridgeResponse<unknown>> {
-    const runtime = await this.prepareRuntime()
+    const enablesPersonalSchedule = command === 'personal-schedule-update' && (settings as PersonalScheduleUpdate | undefined)?.enabled === true
+    const runtime = await this.prepareRuntime(AUTOMATION_COMMANDS.has(command) || enablesPersonalSchedule ? 'automation' : 'core')
     return new Promise((resolveResult, reject) => {
       const child = spawn(runtime.pythonPath, [this.bridgePath], {
         cwd: this.config.dataRoot,
@@ -177,22 +182,43 @@ export class AttendanceBridge {
     })
   }
 
-  private prepareRuntime(): Promise<RuntimeBootstrapResult> {
-    if (this.runtime === undefined) {
-      this.runtime = prepareRuntime({
+  private prepareRuntime(tier: RuntimeDependencyTier): Promise<RuntimeBootstrapResult> {
+    if (tier === 'automation') {
+      if (this.automationRuntime === undefined) {
+        this.automationRuntime = this.prepareRuntime('core').then(() => prepareRuntime({
+          pythonPath: this.config.pythonPath,
+          dataRoot: this.config.dataRoot,
+          requirementsPath: this.automationRequirementsPath,
+          dependencyTier: 'automation',
+          packageIndexUrl: this.config.pythonPackageIndex,
+          onProgress: status => { this.runtimeStatus = status },
+        })).catch(error => {
+          this.automationRuntime = undefined
+          throw this.runtimeError(error)
+        })
+      }
+      return this.automationRuntime
+    }
+    if (this.coreRuntime === undefined) {
+      this.coreRuntime = prepareRuntime({
         pythonPath: this.config.pythonPath,
         dataRoot: this.config.dataRoot,
-        requirementsPath: this.requirementsPath,
+        requirementsPath: this.coreRequirementsPath,
+        dependencyTier: 'core',
         packageIndexUrl: this.config.pythonPackageIndex,
         onProgress: status => { this.runtimeStatus = status },
       }).catch(error => {
-        this.runtime = undefined
-        this.runtimeStatus = { phase: 'error', progress: this.runtimeStatus.progress, detail: '运行环境准备失败', updatedAt: new Date().toISOString() }
-        if (error instanceof RuntimeBootstrapError) throw new BridgeError('RUNTIME_PREPARATION_FAILED', error.message)
-        throw new BridgeError('RUNTIME_PREPARATION_FAILED', 'iEPMS 运行环境准备失败。')
+        this.coreRuntime = undefined
+        throw this.runtimeError(error)
       })
     }
-    return this.runtime
+    return this.coreRuntime
+  }
+
+  private runtimeError(error: unknown): BridgeError {
+    this.runtimeStatus = { phase: 'error', progress: this.runtimeStatus.progress, detail: '运行环境准备失败', updatedAt: new Date().toISOString() }
+    if (error instanceof RuntimeBootstrapError) return new BridgeError('RUNTIME_PREPARATION_FAILED', error.message)
+    return new BridgeError('RUNTIME_PREPARATION_FAILED', 'iEPMS 运行环境准备失败。')
   }
 }
 

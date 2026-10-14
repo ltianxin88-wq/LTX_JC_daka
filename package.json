@@ -1,6 +1,6 @@
 {
   "name": "iepms-attendance-plugin",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "iEPMS management and personal attendance dashboards for DeepSeek Harness",
   "license": "UNLICENSED",
   "type": "module",
@@ -12,7 +12,7 @@
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
-  "files": ["lib/**/*.js", "lib/**/*.d.ts", "lib/**/*.map", "backend/**/*.py", "backend/requirements.txt", "cordis.patch.yml", "README.md", "DEVELOPMENT_PLAN.md", "PET_ATTENDANCE_REMINDER_PLAN.md"],
+  "files": ["lib/**/*.js", "lib/**/*.d.ts", "backend/**/*.py", "backend/*.txt", "cordis.patch.yml", "README.md"],
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": {

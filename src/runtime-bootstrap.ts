@@ -3,7 +3,12 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { RuntimePreparationView } from './contracts.js'
 
-const REQUIRED_IMPORTS = 'import playwright, openpyxl, requests, cv2, numpy, chinese_calendar, portalocker, psutil; import win32crypt'
+export type RuntimeDependencyTier = 'core' | 'automation'
+
+const REQUIRED_IMPORTS: Record<RuntimeDependencyTier, string> = {
+  core: 'import openpyxl, chinese_calendar; import win32crypt',
+  automation: 'import playwright, requests, cv2, numpy, portalocker, psutil',
+}
 const INSTALL_TIMEOUT_MS = 15 * 60 * 1000
 const OFFICIAL_PYPI_INDEX = 'https://pypi.org/simple'
 
@@ -13,6 +18,7 @@ export interface RuntimeBootstrapOptions {
   pythonPath: string
   dataRoot: string
   requirementsPath: string
+  dependencyTier: RuntimeDependencyTier
   packageIndexUrl: string
   onProgress?: (status: RuntimePreparationView) => void
 }
@@ -23,6 +29,7 @@ export interface RuntimeBootstrapResult {
 }
 
 export async function prepareRuntime(options: RuntimeBootstrapOptions): Promise<RuntimeBootstrapResult> {
+  const automation = options.dependencyTier === 'automation'
   const report = (phase: RuntimePreparationView['phase'], progress: number, detail: string): void => {
     options.onProgress?.({ phase, progress, detail, updatedAt: new Date().toISOString() })
   }
@@ -43,9 +50,9 @@ export async function prepareRuntime(options: RuntimeBootstrapOptions): Promise<
     }
   }
   const environment = { ...process.env }
-  report('checking-dependencies', 35, '正在检查已安装的运行依赖')
-  if (await importsAvailable(runtimePython, environment)) {
-    report('ready', 100, '运行环境已就绪')
+  report('checking-dependencies', 35, automation ? '正在检查巡检自动化依赖' : '正在检查基础运行依赖')
+  if (await importsAvailable(runtimePython, environment, options.dependencyTier)) {
+    report('ready', 100, automation ? '巡检运行环境已就绪' : '基础运行环境已就绪')
     return { pythonPath: runtimePython, environment }
   }
 
@@ -54,9 +61,9 @@ export async function prepareRuntime(options: RuntimeBootstrapOptions): Promise<
     try {
       const source = index === 0 ? '国内镜像源' : '官方镜像源'
       let progress = index === 0 ? 45 : 52
-      report('installing-dependencies', progress, `正在从${source}下载运行依赖`)
+      report('installing-dependencies', progress, `正在从${source}下载${automation ? '巡检自动化' : '基础'}依赖`)
       await runPython(runtimePython, [
-        '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--upgrade', '--prefer-binary', '--only-binary=:all:', '--retries', '1', '--timeout', '20',
+        '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--no-cache-dir', '--upgrade', '--prefer-binary', '--only-binary=:all:', '--retries', '1', '--timeout', '20',
         '--index-url', indexUrl, '--requirement', options.requirementsPath,
       ], environment, INSTALL_TIMEOUT_MS, line => {
         const match = /^Collecting\s+([^\s(]+)/iu.exec(line.trim())
@@ -65,8 +72,8 @@ export async function prepareRuntime(options: RuntimeBootstrapOptions): Promise<
         report('installing-dependencies', progress, `正在下载并安装：${match[1]}`)
       })
       report('verifying', 92, '依赖已安装，正在进行可用性验证')
-      if (await importsAvailable(runtimePython, environment)) {
-        report('ready', 100, '运行环境已就绪')
+      if (await importsAvailable(runtimePython, environment, options.dependencyTier)) {
+        report('ready', 100, automation ? '巡检运行环境已就绪' : '基础运行环境已就绪')
         return { pythonPath: runtimePython, environment }
       }
     } catch {
@@ -76,9 +83,9 @@ export async function prepareRuntime(options: RuntimeBootstrapOptions): Promise<
   throw new RuntimeBootstrapError('首次准备 iEPMS 运行环境失败。请检查网络连接后重试。')
 }
 
-async function importsAvailable(pythonPath: string, environment: NodeJS.ProcessEnv): Promise<boolean> {
+async function importsAvailable(pythonPath: string, environment: NodeJS.ProcessEnv, tier: RuntimeDependencyTier): Promise<boolean> {
   try {
-    await runPython(pythonPath, ['-c', REQUIRED_IMPORTS], environment, 30_000)
+    await runPython(pythonPath, ['-c', REQUIRED_IMPORTS[tier]], environment, 30_000)
     return true
   } catch {
     return false

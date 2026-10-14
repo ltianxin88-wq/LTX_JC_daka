@@ -840,7 +840,7 @@ function PanelState({ title, text, retry }: { title: string; text: string; retry
 function RuntimePreparationState({ value }: { value: RuntimePreparationView }) {
   const progress = Math.max(4, Math.min(100, value.progress))
   const text = value.phase === 'installing-dependencies'
-    ? '首次使用会自动下载并安装依赖，包含浏览器自动化与图像识别组件；下载速度取决于网络。'
+    ? '首次打开仅安装轻量基础依赖；启动巡检时才会按需安装浏览器自动化与图像识别组件。'
     : '此过程不会登录 iEPMS，也不会发送通知。'
   return <div className="iepms-attendance-state iepms-runtime-state" role="status" aria-live="polite">
     <div className="iepms-runtime-state-title"><h2>正在准备插件运行环境</h2><strong>{progress}%</strong></div>

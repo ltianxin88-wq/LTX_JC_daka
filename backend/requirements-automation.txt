@@ -1,0 +1,6 @@
+playwright==1.60.0
+requests==2.34.2
+opencv-python-headless==4.13.0.92
+numpy==2.5.0
+portalocker==3.2.0
+psutil==7.2.0
