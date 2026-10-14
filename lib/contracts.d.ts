@@ -2,6 +2,11 @@ export declare const PLUGIN_ID = "iepms-attendance-plugin";
 export declare const API_PREFIX = "/iepms-attendance-local/v1";
 export declare const CLIENT_HEADER = "x-iepms-attendance-client";
 export declare const CLIENT_NAME = "dashboard-web";
+export declare const MANAGEMENT_HEADER = "x-iepms-attendance-management";
+export interface ManagementAuthorizationView {
+    token: string;
+    expiresAt: string;
+}
 export type ReadCommand = 'status' | 'roster-summary' | 'roster-read' | 'personal-roster-read' | 'recent-runs' | 'schedule-status' | 'configuration-read' | 'personal-attendance' | 'personal-automation-read' | 'personal-makeup-read' | 'management-run-read' | 'management-log-read';
 export type AnalyticsReadCommand = 'management-analytics-read' | 'management-analytics-person-read';
 export type BridgeCommand = ReadCommand | AnalyticsReadCommand | 'configuration-update' | 'roster-update' | 'personal-roster-update' | 'personal-account-update' | 'personal-run-start' | 'personal-schedule-update' | 'personal-reminder-settings-update' | 'personal-reminder-delivery-reserve' | 'personal-reminder-delivery-complete' | 'personal-startup-claim' | 'personal-makeup-submit' | 'management-run-start';

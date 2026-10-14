@@ -2,7 +2,9 @@
 
 `iepms-attendance-plugin` adds a local attendance-monitoring and secure configuration panel to DeepSeek Harness.
 
-Version 0.8.0 is self-contained: its Python bridge and login, credential, monitoring, scheduling and attendance support modules are packaged under `backend/`. Runtime data is stored under `%LOCALAPPDATA%\DeepSeek Harness\plugins\iepms-attendance-plugin` by default, including the SQLite database, roster, configuration, session and local history. It does not import or execute code from `D:\dingding\daka`.
+Version 0.8.1 is self-contained: its Python bridge and login, credential, monitoring, scheduling and attendance support modules are packaged under `backend/`. Runtime data is stored under `%LOCALAPPDATA%\DeepSeek Harness\plugins\iepms-attendance-plugin` by default, including the SQLite database, roster, configuration, session and local history. It does not import or execute code from `D:\dingding\daka`.
+
+The dashboard opens in personal mode. Management data, configuration, roster maintenance, inspection, and analytics endpoints require a server-validated management authorization. The configured code is stored in the package only as a SHA-256 digest. Successful verification issues a random in-memory token that expires after 12 hours and is lost when the desktop runtime restarts; the browser keeps that token only in the current page session.
 
 Personal reminder settings are opt-in and stored in the plugin database. The desktop can perform one startup inspection per account and attendance date, generate sanitized reminder events, use PET when its public reminder capability is available, and fall back to a desktop notification or the plugin status area. Reminder delivery is deduplicated for six hours. Personal reminders never use the employee or management DingTalk Webhook. ISO timestamps received from Node are converted from their declared timezone to the machine's local timezone before expiration checks, so UTC `Z` values are handled correctly on China-time desktops.
 

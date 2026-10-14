@@ -20,7 +20,8 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   API_PREFIX, CLIENT_HEADER, CLIENT_NAME, PLUGIN_ID,
-  type AttendanceReminderType, type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type ManagementAnalyticsPersonView, type ManagementAnalyticsRow, type ManagementAnalyticsView, type ManagementRunView,
+  MANAGEMENT_HEADER,
+  type AttendanceReminderType, type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type ManagementAnalyticsPersonView, type ManagementAnalyticsRow, type ManagementAnalyticsView, type ManagementAuthorizationView, type ManagementRunView,
   type PersonalAttendanceRecord, type PersonalAttendanceStatus, type PersonalAttendanceView, type PersonalAutomationView, type PersonalMakeupView, type PersonalRosterView, type RuntimePreparationView,
   type RosterRow, type RosterTableView,
 } from './contracts.js'
@@ -105,8 +106,10 @@ function AttendanceWorkspace({ workspace }: ConversationSlotProps & { workspace:
 }
 
 function AttendancePanel({ workspace }: { workspace?: WorkspaceController }) {
-  const [view, setView] = useState<'management' | 'personal'>('management')
-  const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [view, setView] = useState<'management' | 'personal'>('personal')
+  const [state, setState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const [managementAuthorization, setManagementAuthorization] = useState('')
+  const [authorizationOpen, setAuthorizationOpen] = useState(false)
   const [snapshot, setSnapshot] = useState<DashboardSnapshot>()
   const [configuration, setConfiguration] = useState<ConfigurationView>()
   const [error, setError] = useState('')
@@ -116,12 +119,12 @@ function AttendancePanel({ workspace }: { workspace?: WorkspaceController }) {
   const [personalAutomation, setPersonalAutomation] = useState<PersonalAutomationView>()
   const [personalMakeup, setPersonalMakeup] = useState<PersonalMakeupView>()
   const [personalError, setPersonalError] = useState('')
-  const load = useCallback(async (background = false): Promise<void> => {
+  const load = useCallback(async (authorization: string, background = false): Promise<void> => {
     if (!background) setState('loading')
     setError('')
     try {
       const [nextSnapshot, nextConfiguration] = await Promise.all([
-        requestApi<DashboardSnapshot>('snapshot'), requestApi<ConfigurationView>('configuration'),
+        requestManagementApi<DashboardSnapshot>(authorization, 'snapshot'), requestManagementApi<ConfigurationView>(authorization, 'configuration'),
       ])
       if (!isSnapshot(nextSnapshot) || !isConfiguration(nextConfiguration)) throw new Error('考勤状态服务返回了无效数据。')
       setSnapshot(nextSnapshot)
@@ -132,7 +135,9 @@ function AttendancePanel({ workspace }: { workspace?: WorkspaceController }) {
       setError(value instanceof Error ? value.message : '考勤状态读取失败。')
     }
   }, [])
-  useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    if (view === 'management' && managementAuthorization && state === 'idle') void load(managementAuthorization)
+  }, [load, managementAuthorization, state, view])
   useEffect(() => {
     if (state !== 'loading') return
     let active = true
@@ -179,19 +184,20 @@ function AttendancePanel({ workspace }: { workspace?: WorkspaceController }) {
       </div>
       <div className="iepms-attendance-header-actions">
         <div className="iepms-attendance-view-switch" role="tablist" aria-label="考勤视图">
-          <button type="button" role="tab" aria-selected={view === 'management'} className={view === 'management' ? 'is-active' : ''} onClick={() => { setView('management') }}>管理版</button>
+          <button type="button" role="tab" aria-selected={view === 'management'} className={view === 'management' ? 'is-active' : ''} onClick={() => { if (managementAuthorization) setView('management'); else setAuthorizationOpen(true) }}>管理版</button>
           <button type="button" role="tab" aria-selected={view === 'personal'} className={view === 'personal' ? 'is-active' : ''} onClick={() => { setView('personal') }}>个人版</button>
         </div>
-        <button type="button" className="iepms-attendance-refresh" onClick={() => { void (view === 'management' ? load() : loadPersonal()) }} disabled={view === 'management' ? state === 'loading' : personalState === 'loading'} title="刷新状态"><IconInspectOutline16 size={16} /></button>
+        <button type="button" className="iepms-attendance-refresh" onClick={() => { void (view === 'management' ? load(managementAuthorization) : loadPersonal()) }} disabled={view === 'management' ? state === 'loading' : personalState === 'loading'} title="刷新状态"><IconInspectOutline16 size={16} /></button>
       </div>
     </header>
     <div className="iepms-attendance-scroll" tabIndex={0} aria-label="考勤监控内容">
       {view === 'management' && state === 'loading' && <RuntimePreparationState value={runtimeStatus} />}
-      {view === 'management' && state === 'error' && <PanelState title="暂时无法读取考勤状态" text={error} retry={() => { void load() }} />}
+      {view === 'management' && state === 'error' && <PanelState title="暂时无法读取考勤状态" text={error} retry={() => { void load(managementAuthorization) }} />}
       {view === 'management' && state === 'ready' && snapshot !== undefined && configuration !== undefined && <Dashboard
         snapshot={snapshot}
         configuration={configuration}
-        onConfigurationSaved={next => { setConfiguration(next); void load(true) }}
+        authorization={managementAuthorization}
+        onConfigurationSaved={next => { setConfiguration(next); void load(managementAuthorization, true) }}
       />}
       {view === 'personal' && (personalState === 'idle' || personalState === 'loading') && <PersonalSkeleton />}
       {view === 'personal' && personalState === 'error' && <PanelState title="暂时无法读取个人考勤" text={personalError} retry={() => { void loadPersonal() }} />}
@@ -203,14 +209,55 @@ function AttendancePanel({ workspace }: { workspace?: WorkspaceController }) {
         makeup={personalMakeup}
       />}
     </div>
+    {authorizationOpen && <ManagementAuthorizationDialog
+      onCancel={() => { setAuthorizationOpen(false) }}
+      onAuthorized={authorization => {
+        setManagementAuthorization(authorization)
+        setState('idle')
+        setAuthorizationOpen(false)
+        setView('management')
+      }}
+    />}
   </section>
 }
 
-function Dashboard({ snapshot, configuration, onConfigurationSaved }: { snapshot: DashboardSnapshot; configuration: ConfigurationView; onConfigurationSaved: (value: ConfigurationView) => void }) {
+function ManagementAuthorizationDialog({ onAuthorized, onCancel }: { onAuthorized: (token: string) => void; onCancel: () => void }) {
+  const [code, setCode] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const submit = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault()
+    if (!code) return setError('请输入管理版授权码。')
+    setSubmitting(true)
+    setError('')
+    try {
+      const result = await requestApi<ManagementAuthorizationView>('management-authorize', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }),
+      })
+      if (typeof result.token !== 'string' || result.token.length < 32 || typeof result.expiresAt !== 'string') throw new Error('管理版授权服务返回了无效数据。')
+      setCode('')
+      onAuthorized(result.token)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '管理版授权失败。')
+    } finally { setSubmitting(false) }
+  }
+  return <div className="iepms-management-auth-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !submitting) onCancel() }}>
+    <section className="iepms-management-auth" role="dialog" aria-modal="true" aria-labelledby="iepms-management-auth-title">
+      <header><IconInspectOutline16 size={19} /><div><h2 id="iepms-management-auth-title">管理版授权</h2><p>查看管理数据和配置前需要验证授权码</p></div></header>
+      <form onSubmit={event => { void submit(event) }}>
+        <label><span>授权码</span><input type="password" autoComplete="off" autoFocus value={code} disabled={submitting} onChange={event => { setCode(event.target.value); setError('') }} placeholder="请输入管理版授权码" /></label>
+        {error && <p role="alert">{error}</p>}
+        <div><button type="button" disabled={submitting} onClick={onCancel}>取消</button><button type="submit" className="is-primary" disabled={submitting || !code}>{submitting ? '验证中…' : '验证并进入'}</button></div>
+      </form>
+    </section>
+  </div>
+}
+
+function Dashboard({ snapshot, configuration, authorization, onConfigurationSaved }: { snapshot: DashboardSnapshot; configuration: ConfigurationView; authorization: string; onConfigurationSaved: (value: ConfigurationView) => void }) {
   const [section, setSection] = useState<'overview' | 'analytics'>('overview')
   const statusConfig = snapshot.status.configuration
   const data = snapshot.status.data
-  if (section === 'analytics') return <ManagementAnalytics onBack={() => { setSection('overview') }} />
+  if (section === 'analytics') return <ManagementAnalytics authorization={authorization} onBack={() => { setSection('overview') }} />
   return <div className="iepms-attendance-content">
     <div className="iepms-attendance-mode" role="status"><IconDataOutline16 size={15} /><span>安全模式</span><p>仅在你点击保存时更新本地配置；不会自动登录、巡检、导出或发送钉钉消息。</p></div>
     <section className="iepms-attendance-summary" aria-label="运行概览">
@@ -219,7 +266,7 @@ function Dashboard({ snapshot, configuration, onConfigurationSaved }: { snapshot
       <Metric label="计划任务" value={`${snapshot.schedule.tasks.length} 项`} detail={snapshot.schedule.message ?? '已读取本地 Windows 计划任务'} good={snapshot.schedule.supported} />
       <Metric label="配置状态" value={statusConfig.valid ? '已读取' : '需检查'} detail={`${statusConfig.accountConfigured ? '账号已配置' : '账号未配置'} · ${statusConfig.browserConfigured ? '浏览器已配置' : '浏览器未配置'}`} good={statusConfig.valid && statusConfig.accountConfigured} />
     </section>
-    <ManagementOperations onAnalytics={() => { setSection('analytics') }} />
+    <ManagementOperations authorization={authorization} onAnalytics={() => { setSection('analytics') }} />
     <div className="iepms-attendance-columns">
       <section className="iepms-attendance-section"><header><IconClockOutline16 size={16} /><h2>近期状态</h2></header>
         {snapshot.recentRuns.length === 0 ? <Empty text="尚无可展示的本地运行摘要。" /> : <ol className="iepms-attendance-events">{snapshot.recentRuns.map((item, index) => <li key={`${item.timestamp}-${index}`} className={`is-${item.level}`}><time>{item.timestamp}</time><span>{item.summary}</span></li>)}</ol>}
@@ -228,8 +275,8 @@ function Dashboard({ snapshot, configuration, onConfigurationSaved }: { snapshot
         {snapshot.schedule.tasks.length === 0 ? <Empty text={snapshot.schedule.message ?? '没有已管理的计划任务。'} /> : <ul className="iepms-attendance-tasks">{snapshot.schedule.tasks.map(task => <li key={task.name}><span>{task.name}</span><strong className={`is-${task.state}`}>{taskStateLabel(task.state)}</strong></li>)}</ul>}
       </section>
     </div>
-    <ConfigurationEditor value={configuration} onSaved={onConfigurationSaved} />
-    <RosterManager />
+    <ConfigurationEditor authorization={authorization} value={configuration} onSaved={onConfigurationSaved} />
+    <RosterManager authorization={authorization} />
     <section className="iepms-attendance-section iepms-attendance-readiness"><header><IconInspectOutline16 size={16} /><h2>本地准备状态</h2></header><ul>
       <Readiness label="配置文件" ready={statusConfig.fileAvailable && statusConfig.valid} />
       <Readiness label="本地账号配置" ready={statusConfig.accountConfigured} />
@@ -240,7 +287,7 @@ function Dashboard({ snapshot, configuration, onConfigurationSaved }: { snapshot
   </div>
 }
 
-function ManagementOperations({ onAnalytics }: { onAnalytics: () => void }) {
+function ManagementOperations({ authorization, onAnalytics }: { authorization: string; onAnalytics: () => void }) {
   const [run, setRun] = useState<ManagementRunView>()
   const [logs, setLogs] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
@@ -249,7 +296,7 @@ function ManagementOperations({ onAnalytics }: { onAnalytics: () => void }) {
   const refresh = useCallback(async (): Promise<void> => {
     try {
       const [nextRun, nextLogs] = await Promise.all([
-        requestApi<ManagementRunView>('management-run'), requestApi<string[]>('management-log'),
+        requestManagementApi<ManagementRunView>(authorization, 'management-run'), requestManagementApi<string[]>(authorization, 'management-log'),
       ])
       if (!isManagementRun(nextRun) || !Array.isArray(nextLogs) || !nextLogs.every(line => typeof line === 'string')) throw new Error('管理巡检服务返回了无效数据。')
       setRun(nextRun)
@@ -258,7 +305,7 @@ function ManagementOperations({ onAnalytics }: { onAnalytics: () => void }) {
     } catch (value) {
       setError(value instanceof Error ? value.message : '无法读取管理巡检状态。')
     } finally { setLoading(false) }
-  }, [])
+  }, [authorization])
   useEffect(() => { void refresh() }, [refresh])
   useEffect(() => {
     if (run?.state !== 'running') return
@@ -270,7 +317,7 @@ function ManagementOperations({ onAnalytics }: { onAnalytics: () => void }) {
     setStarting(true)
     setError('')
     try {
-      const next = await requestApi<ManagementRunView>('management-run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+      const next = await requestManagementApi<ManagementRunView>(authorization, 'management-run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
       if (!isManagementRun(next)) throw new Error('管理巡检服务返回了无效数据。')
       setRun(next)
       await refresh()
@@ -287,7 +334,7 @@ function ManagementOperations({ onAnalytics }: { onAnalytics: () => void }) {
   </section>
 }
 
-function ManagementAnalytics({ onBack }: { onBack: () => void }) {
+function ManagementAnalytics({ authorization, onBack }: { authorization: string; onBack: () => void }) {
   const [month, setMonth] = useState(monthKey(new Date()))
   const [name, setName] = useState('')
   const [group, setGroup] = useState('')
@@ -302,18 +349,18 @@ function ManagementAnalytics({ onBack }: { onBack: () => void }) {
     setLoading(true)
     setError('')
     try {
-      const next = await requestApi<ManagementAnalyticsView>(analyticsPath('management-analytics', { month, name, group, page, pageSize: 20, sortBy, sortDirection }))
+      const next = await requestManagementApi<ManagementAnalyticsView>(authorization, analyticsPath('management-analytics', { month, name, group, page, pageSize: 20, sortBy, sortDirection }))
       if (!isManagementAnalytics(next)) throw new Error('考勤运营分析服务返回了无效数据。')
       setValue(next)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '无法读取考勤运营分析。')
     } finally { setLoading(false) }
-  }, [group, month, name, page, sortBy, sortDirection])
+  }, [authorization, group, month, name, page, sortBy, sortDirection])
   useEffect(() => { void load() }, [load])
   const updateFilter = (action: () => void): void => { setPage(1); action() }
   const openPerson = async (row: ManagementAnalyticsRow): Promise<void> => {
     try {
-      const next = await requestApi<ManagementAnalyticsPersonView>(analyticsPath('management-analytics-person', { month, personKey: row.personKey }))
+      const next = await requestManagementApi<ManagementAnalyticsPersonView>(authorization, analyticsPath('management-analytics-person', { month, personKey: row.personKey }))
       if (!isManagementAnalyticsPerson(next)) throw new Error('人员考勤详情返回无效。')
       setDetail(next)
     } catch (reason) { setError(reason instanceof Error ? reason.message : '无法读取人员考勤详情。') }
@@ -324,7 +371,7 @@ function ManagementAnalytics({ onBack }: { onBack: () => void }) {
       let exportPage = 1
       let total = 0
       do {
-        const next = await requestApi<ManagementAnalyticsView>(analyticsPath('management-analytics', { month, name, group, page: exportPage, pageSize: 100, sortBy, sortDirection }))
+        const next = await requestManagementApi<ManagementAnalyticsView>(authorization, analyticsPath('management-analytics', { month, name, group, page: exportPage, pageSize: 100, sortBy, sortDirection }))
         if (!isManagementAnalytics(next)) throw new Error('导出数据返回无效。')
         rows.push(...next.rows)
         total = next.pagination.total
@@ -492,7 +539,7 @@ function blankRosterRow(): RosterRow {
   return { rowId: '', projectName: '', projectCode: '', name: '', city: '', account: '', mobile: '', dingtalkId: '', webhookConfigured: false }
 }
 
-function RosterManager() {
+function RosterManager({ authorization }: { authorization: string }) {
   const [rows, setRows] = useState<RosterRow[]>([])
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [search, setSearch] = useState('')
@@ -504,7 +551,7 @@ function RosterManager() {
   const load = useCallback(async (): Promise<void> => {
     setState('loading')
     try {
-      const value = await requestApi<RosterTableView>('roster')
+      const value = await requestManagementApi<RosterTableView>(authorization, 'roster')
       if (!isRosterTable(value)) throw new Error('花名册服务返回了无效数据。')
       setRows(value.rows)
       setBackupAvailable(value.backupAvailable)
@@ -514,7 +561,7 @@ function RosterManager() {
       setMessage({ kind: 'error', text: error instanceof Error ? error.message : '花名册读取失败。' })
       setState('error')
     }
-  }, [])
+  }, [authorization])
   useEffect(() => { void load() }, [load])
   const update = (rowId: string, index: number, key: keyof RosterRow, value: string | boolean): void => {
     setRows(current => current.map((row, rowIndex) => row.rowId === rowId && rowId ? { ...row, [key]: value } : rowIndex === index ? { ...row, [key]: value } : row))
@@ -530,7 +577,7 @@ function RosterManager() {
     setSaving(true)
     setMessage(undefined)
     try {
-      const value = await requestApi<RosterTableView>('roster', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rows }) })
+      const value = await requestManagementApi<RosterTableView>(authorization, 'roster', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rows }) })
       if (!isRosterTable(value)) throw new Error('花名册服务返回了无效数据。')
       setRows(value.rows)
       setBackupAvailable(value.backupAvailable)
@@ -716,7 +763,7 @@ function PersonalSkeleton() {
   return <div className="iepms-personal-content is-loading" aria-label="正在读取个人考勤" aria-busy="true"><div className="iepms-personal-metrics">{[0, 1, 2, 3].map(item => <div className="iepms-personal-skeleton" key={item} />)}</div><div className="iepms-personal-grid"><div className="iepms-personal-skeleton is-large" /><div className="iepms-personal-skeleton is-large" /></div><div className="iepms-personal-skeleton is-table" /></div>
 }
 
-function ConfigurationEditor({ value, onSaved }: { value: ConfigurationView; onSaved: (value: ConfigurationView) => void }) {
+function ConfigurationEditor({ authorization, value, onSaved }: { authorization: string; value: ConfigurationView; onSaved: (value: ConfigurationView) => void }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [webhook, setWebhook] = useState('')
@@ -746,7 +793,7 @@ function ConfigurationEditor({ value, onSaved }: { value: ConfigurationView; onS
     setSaving(true)
     setMessage(undefined)
     try {
-      const next = await requestApi<ConfigurationView>('configuration', {
+      const next = await requestManagementApi<ConfigurationView>(authorization, 'configuration', {
         method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(settings),
       })
       if (!isConfiguration(next)) throw new Error('配置服务返回了无效数据。')
@@ -932,6 +979,10 @@ async function requestApi<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!response.ok) throw new Error(payload !== undefined && payload !== null && typeof payload === 'object' && 'error' in payload && typeof payload.error === 'string' ? payload.error : '考勤状态服务暂不可用。')
   if (payload === undefined) throw new Error('考勤状态服务没有返回数据。')
   return payload as T
+}
+
+function requestManagementApi<T>(authorization: string, path: string, init: RequestInit = {}): Promise<T> {
+  return requestApi<T>(path, { ...init, headers: { [MANAGEMENT_HEADER]: authorization, ...init.headers } })
 }
 
 function installStyles(): () => void {

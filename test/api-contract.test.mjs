@@ -5,6 +5,9 @@ import { readFile } from 'node:fs/promises'
 test('local API permits reads and scoped configuration updates with a same-origin client marker', async () => {
   const source = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8')
   assert.match(source, /CLIENT_HEADER/)
+  assert.match(source, /'management-authorize' && method === 'POST'/)
+  assert.match(source, /isProtectedManagementRequest/)
+  assert.match(source, /authorization\.assert\(req\)/)
   assert.match(source, /'snapshot'/)
   assert.match(source, /path === 'configuration' && method === 'PUT'/)
   assert.match(source, /path === 'personal-attendance' && method === 'GET'/)

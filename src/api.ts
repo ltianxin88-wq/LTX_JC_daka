@@ -4,24 +4,31 @@ import {
   API_PREFIX, CLIENT_HEADER, CLIENT_NAME,
   type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type ManagementAnalyticsFilter, type ManagementAnalyticsPersonView, type ManagementAnalyticsView, type ManagementRunView, type PersonalAccountUpdate, type PersonalAttendanceView, type PersonalAutomationView, type PersonalMakeupSubmit, type PersonalMakeupView, type PersonalReminderSettingsUpdate, type PersonalRosterUpdate, type PersonalRosterView, type PersonalScheduleUpdate, type ReadCommand, type RecentRunView, type RosterTableView, type RosterUpdate, type RosterView, type ScheduleView, type StatusView,
 } from './contracts.js'
+import { ManagementAuthorization } from './management-authorization.js'
 import type { RuntimeContextLike } from './runtime.js'
 
 export function registerAttendanceApi(ctx: RuntimeContextLike, bridge: AttendanceBridge): () => void {
   const server = ctx.webServer ?? ctx.get('webServer') as RuntimeContextLike['webServer']
   if (server === undefined) throw new Error('iEPMS attendance plugin requires the DSH webServer service')
+  const authorization = new ManagementAuthorization()
   return server.register({
     kind: 'prefix', path: API_PREFIX,
     handler: async (req, res) => {
-      try { await dispatch(req, res, bridge) } catch (error) { sendError(res, error) }
+      try { await dispatch(req, res, bridge, authorization) } catch (error) { sendError(res, error) }
     },
   })
 }
 
-async function dispatch(req: IncomingMessage, res: ServerResponse, bridge: AttendanceBridge): Promise<void> {
+async function dispatch(req: IncomingMessage, res: ServerResponse, bridge: AttendanceBridge, authorization: ManagementAuthorization): Promise<void> {
   assertBrowserRequest(req)
   const url = new URL(req.url ?? '/', 'http://iepms.local')
   const path = url.pathname.slice(API_PREFIX.length).replace(/^\/+|\/+$/gu, '')
   const method = req.method ?? 'GET'
+  if (path === 'management-authorize' && method === 'POST') {
+    const code = validateManagementAuthorization(await readJsonBody(req, 1024))
+    return sendJson(res, 200, authorization.authorize(code))
+  }
+  if (isProtectedManagementRequest(path)) authorization.assert(req)
   if (path === 'configuration' && method === 'GET') {
     return sendJson(res, 200, await bridge.read<ConfigurationView>('configuration-read'))
   }
@@ -93,6 +100,17 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, bridge: Atten
     return sendJson(res, 200, await bridge.read(path as ReadCommand))
   }
   throw httpError(404, '考勤状态接口不存在。')
+}
+
+function isProtectedManagementRequest(path: string): boolean {
+  return path === 'configuration' || path === 'snapshot' || path === 'roster' || path === 'status' || path === 'roster-summary' || path === 'schedule-status' || path === 'recent-runs' || path.startsWith('management-')
+}
+
+function validateManagementAuthorization(value: unknown): string {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw httpError(400, '管理版授权请求无效。')
+  const record = value as Record<string, unknown>
+  if (Object.keys(record).length !== 1 || typeof record.code !== 'string' || record.code.length < 1 || record.code.length > 256) throw httpError(400, '请输入有效的管理版授权码。')
+  return record.code
 }
 
 function validateManagementAnalyticsQuery(search: URLSearchParams, requirePerson = false): ManagementAnalyticsFilter {
