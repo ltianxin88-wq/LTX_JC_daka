@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto'
+import type { AttendanceBridge } from './bridge.js'
+import type { PersonalAutomationView } from './contracts.js'
 import type { PersonalInspectionInternalService, PersonalInspectionResult } from './personal-inspection-service.js'
+import { deliverReminder } from './reminder-delivery.js'
+import { reminderEventsForResult, type AttendanceReminderEvent } from './reminder-events.js'
 import type { RuntimeContextLike } from './runtime.js'
 
 const PET_SOURCE = 'iepms-attendance'
@@ -10,6 +14,7 @@ const MAX_POLLS = 60
 
 export interface PetIntegrationLike {
   announce(input: unknown): { ok: boolean }
+  announceAttendanceReminder?(event: AttendanceReminderEvent): { ok: boolean }
   registerPanelAction(action: {
     id: string
     label: string
@@ -34,6 +39,7 @@ export interface PetIntegrationOptions {
 export function installPetAttendanceIntegration(
   runtime: RuntimeContextLike,
   service: PersonalInspectionInternalService,
+  bridge: AttendanceBridge,
   options: PetIntegrationOptions = {},
 ): () => void {
   const pet = readOptionalPet(runtime)
@@ -46,7 +52,7 @@ export function installPetAttendanceIntegration(
     if (pet === undefined || result === undefined) return
     pet.announce(toPetAnnouncement(result, progress))
   }
-  const execute = async (starter: () => Promise<PersonalInspectionResult | undefined>): Promise<void> => {
+  const execute = async (starter: () => Promise<PersonalInspectionResult | undefined>, automatic = false): Promise<void> => {
     if (disposed || running) {
       if (running) announce({ operationId: 'busy', state: 'running', message: '正在检查今日个人打卡状态。' })
       return
@@ -55,20 +61,36 @@ export function installPetAttendanceIntegration(
     try {
       const initial = await starter()
       if (initial === undefined) return
-      announce(initial, initial.state === 'success' ? 100 : 10)
+      if (!automatic) announce(initial, initial.state === 'success' ? 100 : 10)
       let result = initial
       for (let index = 0; index < maxPolls && !disposed && (result.state === 'accepted' || result.state === 'running'); index += 1) {
         await wait(pollIntervalMs)
         if (disposed) return
         result = await service.status(initial.operationId)
         const progress = result.state === 'success' ? 100 : 10 + Math.round(((index + 1) / maxPolls) * 85)
-        announce(result, Math.min(95, progress))
+        if (!automatic) announce(result, Math.min(95, progress))
       }
       if (result.state === 'accepted' || result.state === 'running') {
-        announce({ ...result, state: 'error', message: '个人巡检仍在执行，暂时无法确认打卡状态。' })
+        result = { ...result, state: 'error', message: '个人巡检仍在执行，暂时无法确认打卡状态。' }
+        if (!automatic) announce(result)
+      }
+      if (automatic) {
+        const automation = await bridge.read<PersonalAutomationView>('personal-automation-read')
+        for (const event of reminderEventsForResult(result, automation.reminders)) {
+          await deliverReminder(runtime, bridge, pet, event, automation.reminders)
+        }
       }
     } catch {
-      announce({ operationId: 'error', state: 'error', message: '个人巡检失败，暂时无法确认打卡状态。' })
+      const result: PersonalInspectionResult = { operationId: 'error', state: 'error', message: '个人巡检失败，暂时无法确认打卡状态。' }
+      if (!automatic) announce(result)
+      else {
+        try {
+          const automation = await bridge.read<PersonalAutomationView>('personal-automation-read')
+          for (const event of reminderEventsForResult(result, automation.reminders)) {
+            await deliverReminder(runtime, bridge, pet, event, automation.reminders)
+          }
+        } catch {}
+      }
     } finally {
       running = false
     }
@@ -84,7 +106,7 @@ export function installPetAttendanceIntegration(
       onSelect: () => execute(() => service.start({ userInitiated: true, requestId: `pet-panel-${randomUUID()}` })),
     })
   }
-  void execute(() => service.startAutomatic())
+  void execute(() => service.startAutomatic(), true)
   return () => {
     disposed = true
     disposeAction()

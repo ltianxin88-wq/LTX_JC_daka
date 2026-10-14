@@ -2,7 +2,9 @@
 
 `iepms-attendance-plugin` adds a local attendance-monitoring and secure configuration panel to DeepSeek Harness.
 
-Version 0.6.0 is self-contained: its Python bridge and login, credential, monitoring, scheduling and attendance support modules are packaged under `backend/`. Runtime data is stored under `%LOCALAPPDATA%\DeepSeek Harness\plugins\iepms-attendance-plugin` by default, including the SQLite database, roster, configuration, session and local history. It does not import or execute code from `D:\dingding\daka`.
+Version 0.8.0 is self-contained: its Python bridge and login, credential, monitoring, scheduling and attendance support modules are packaged under `backend/`. Runtime data is stored under `%LOCALAPPDATA%\DeepSeek Harness\plugins\iepms-attendance-plugin` by default, including the SQLite database, roster, configuration, session and local history. It does not import or execute code from `D:\dingding\daka`.
+
+Personal reminder settings are opt-in and stored in the plugin database. The desktop can perform one startup inspection per account and attendance date, generate sanitized reminder events, use PET when its public reminder capability is available, and fall back to a desktop notification or the plugin status area. Reminder delivery is deduplicated for six hours. Personal reminders never use the employee or management DingTalk Webhook. ISO timestamps received from Node are converted from their declared timezone to the machine's local timezone before expiration checks, so UTC `Z` values are handled correctly on China-time desktops.
 
 The personal view has its own account selector and a one-row roster editor for the employee bound to that account. It cannot browse or modify other employees. Personal synchronization and its immediate/scheduled execution still require the secured management login because the upstream iEPMS API is available only through a management session; after retrieval, records are filtered to the selected personal account. Personal runs never invoke DingTalk alert delivery. Completion and failure messages are retained in the local run state and displayed only inside the plugin.
 

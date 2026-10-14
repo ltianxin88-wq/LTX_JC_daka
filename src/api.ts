@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { AttendanceBridge, BridgeError } from './bridge.js'
 import {
   API_PREFIX, CLIENT_HEADER, CLIENT_NAME,
-  type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type ManagementAnalyticsFilter, type ManagementAnalyticsPersonView, type ManagementAnalyticsView, type ManagementRunView, type PersonalAccountUpdate, type PersonalAttendanceView, type PersonalAutomationView, type PersonalMakeupSubmit, type PersonalMakeupView, type PersonalRosterUpdate, type PersonalRosterView, type PersonalScheduleUpdate, type ReadCommand, type RecentRunView, type RosterTableView, type RosterUpdate, type RosterView, type ScheduleView, type StatusView,
+  type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type ManagementAnalyticsFilter, type ManagementAnalyticsPersonView, type ManagementAnalyticsView, type ManagementRunView, type PersonalAccountUpdate, type PersonalAttendanceView, type PersonalAutomationView, type PersonalMakeupSubmit, type PersonalMakeupView, type PersonalReminderSettingsUpdate, type PersonalRosterUpdate, type PersonalRosterView, type PersonalScheduleUpdate, type ReadCommand, type RecentRunView, type RosterTableView, type RosterUpdate, type RosterView, type ScheduleView, type StatusView,
 } from './contracts.js'
 import type { RuntimeContextLike } from './runtime.js'
 
@@ -58,6 +58,10 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, bridge: Atten
   if (path === 'personal-schedule' && method === 'PUT') {
     const settings = validatePersonalScheduleUpdate(await readJsonBody(req))
     return sendJson(res, 200, await bridge.updatePersonalSchedule(settings))
+  }
+  if (path === 'personal-reminders' && method === 'PUT') {
+    const settings = validatePersonalReminderSettingsUpdate(await readJsonBody(req))
+    return sendJson(res, 200, await bridge.updatePersonalReminderSettings(settings))
   }
   if (path === 'personal-makeup' && method === 'POST') {
     const settings = validatePersonalMakeupSubmit(await readJsonBody(req))
@@ -165,6 +169,16 @@ function validatePersonalScheduleUpdate(value: unknown): PersonalScheduleUpdate 
   if (times.some(value => !/^(?:[01]\d|2[0-3]):[0-5]\d$/u.test(value))) throw httpError(400, '巡检时间必须使用 HH:MM 格式。')
   if (record.enabled && times.length === 0) throw httpError(400, '启用定时巡检时至少需要一个时间。')
   return { enabled: record.enabled, times }
+}
+
+function validatePersonalReminderSettingsUpdate(value: unknown): PersonalReminderSettingsUpdate {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw httpError(400, '个人提醒配置无效。')
+  const record = value as Record<string, unknown>
+  const keys = ['startupInspection', 'usePet', 'fallbackNotification', 'nightSafety', 'shiftType'] as const
+  if (Object.keys(record).length !== keys.length || keys.some(key => !(key in record))) throw httpError(400, '个人提醒配置格式无效。')
+  if (keys.slice(0, 4).some(key => typeof record[key] !== 'boolean')) throw httpError(400, '个人提醒开关必须为布尔值。')
+  if (!['day', 'night', 'flexible', 'off'].includes(String(record.shiftType))) throw httpError(400, '个人班次类型无效。')
+  return record as unknown as PersonalReminderSettingsUpdate
 }
 
 function validatePersonalMakeupSubmit(value: unknown): PersonalMakeupSubmit {

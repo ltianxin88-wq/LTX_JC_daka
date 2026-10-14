@@ -35,6 +35,7 @@ export interface PersonalInspectionInternalService extends PersonalInspectionSer
 interface InspectionBridge {
   startPersonalRun(): Promise<PersonalAutomationView>
   read<T>(command: 'personal-automation-read' | 'personal-attendance'): Promise<T>
+  claimPersonalStartup(settings: { attendanceDate: string }): Promise<{ claimed: boolean }>
 }
 
 const REQUEST_ID_MAX_LENGTH = 128
@@ -90,8 +91,13 @@ export function createPersonalInspectionService(bridge: InspectionBridge | Atten
       const attendance = await bridge.read<PersonalAttendanceView>('personal-attendance')
       if (!attendance.configured) return undefined
       const automation = await bridge.read<PersonalAutomationView>('personal-automation-read')
-      if (!automation.schedule.enabled) return undefined
-      return startWithOperation(`startup-${localDate()}`)
+      if (!automation.reminders.startupInspection || automation.reminders.shiftType === 'off') return undefined
+      const today = localDate()
+      const scheduledToday = attendance.calendar.workdays.includes(today) || automation.reminders.shiftType === 'night'
+      if (!scheduledToday) return undefined
+      const claim = await bridge.claimPersonalStartup({ attendanceDate: today })
+      if (!claim.claimed) return undefined
+      return startWithOperation(`startup-${today}`)
     },
   }
 }

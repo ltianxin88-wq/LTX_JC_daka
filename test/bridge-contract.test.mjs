@@ -549,3 +549,52 @@ test('management analytics separates pending, completed, and expired missing car
     assert.equal(detail.data.records.find(row => row.date === '2026-10-10').resolution, 'made-up')
   } finally { await rm(root, { recursive: true, force: true }) }
 })
+
+test('personal reminder settings and delivery dedup are persisted in SQLite', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'iepms-reminders-'))
+  try {
+    await invoke({ version: 1, command: 'personal-account-update', settings: { account: 'employee.001' } }, root)
+    const updated = await invoke({ version: 1, command: 'personal-reminder-settings-update', settings: {
+      startupInspection: false, usePet: true, fallbackNotification: true, nightSafety: true, shiftType: 'night',
+    } }, root)
+    assert.deepEqual(updated.data.reminders, {
+      startupInspection: false, usePet: true, fallbackNotification: true, nightSafety: true, shiftType: 'night',
+    })
+
+    const event = {
+      eventId: 'attendance-1234567890ab', attendanceDate: '2026-10-14',
+      type: 'night-safety', channel: 'pet', expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+    }
+    const first = await invoke({ version: 1, command: 'personal-reminder-delivery-reserve', settings: event }, root)
+    const duplicate = await invoke({ version: 1, command: 'personal-reminder-delivery-reserve', settings: { ...event, eventId: 'attendance-abcdef123456' } }, root)
+    assert.equal(first.data.allowed, true)
+    assert.equal(duplicate.data.allowed, false)
+    assert.equal(duplicate.data.duplicateOf, event.eventId)
+    await invoke({ version: 1, command: 'personal-reminder-delivery-complete', settings: { eventId: event.eventId, channel: 'pet', status: 'delivered' } }, root)
+
+    const claim = { version: 1, command: 'personal-startup-claim', settings: { attendanceDate: '2026-10-14' } }
+    assert.equal((await invoke(claim, root)).data.claimed, true)
+    assert.equal((await invoke(claim, root)).data.claimed, false)
+    const rows = await readDatabase(join(root, 'iepms-attendance-plugin.db'), 'SELECT reminder_type, channel, status FROM personal_reminder_delivery')
+    assert.deepEqual(rows, [{ reminder_type: 'night-safety', channel: 'pet', status: 'delivered' }])
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('Node UTC reminder expiry is compared as the same local-time instant', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'iepms-reminder-timezone-'))
+  try {
+    await invoke({ version: 1, command: 'personal-account-update', settings: { account: 'employee.001' } }, root)
+    const localNow = new Date()
+    const localNowWithoutOffset = [
+      localNow.getFullYear(), '-', String(localNow.getMonth() + 1).padStart(2, '0'), '-', String(localNow.getDate()).padStart(2, '0'),
+      'T', String(localNow.getHours()).padStart(2, '0'), ':', String(localNow.getMinutes()).padStart(2, '0'), ':', String(localNow.getSeconds()).padStart(2, '0'),
+    ].join('')
+    const expiresAt = new Date(localNow.getTime() + 30 * 60 * 1000).toISOString()
+    const result = await invoke({ version: 1, command: 'personal-reminder-delivery-reserve', settings: {
+      eventId: 'attendance-timezone1234', attendanceDate: localNowWithoutOffset.slice(0, 10),
+      type: 'sync-failed', channel: 'plugin', expiresAt,
+    } }, root, { IEPMS_BRIDGE_TEST_NOW: localNowWithoutOffset })
+    assert.equal(result.ok, true)
+    assert.equal(result.data.allowed, true)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})

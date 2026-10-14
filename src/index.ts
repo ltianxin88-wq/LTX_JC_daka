@@ -22,7 +22,7 @@ export function apply(ctx: Context, config: AttendanceConfig): void {
     start: inspection.start,
     status: inspection.status,
   })
-  runtime.effect(() => installPetAttendanceIntegration(runtime, inspection), 'iepms-attendance-plugin.pet')
+  runtime.effect(() => installPetAttendanceIntegration(runtime, inspection, bridge), 'iepms-attendance-plugin.pet')
   runtime.effect(() => {
     const dispose = registerAttendanceApi(runtime, bridge)
     runtime.logger.info('iepms-attendance-plugin: local dashboard and secure configuration API registered')

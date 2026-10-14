@@ -3,7 +3,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Config } from './config.js'
-import type { BridgeCommand, BridgeResponse, ConfigurationUpdate, ConfigurationView, ManagementAnalyticsFilter, ManagementAnalyticsPersonView, ManagementAnalyticsView, ManagementRunView, PersonalAccountUpdate, PersonalAttendanceView, PersonalAutomationView, PersonalMakeupSubmit, PersonalMakeupView, PersonalRosterUpdate, PersonalRosterView, PersonalScheduleUpdate, ReadCommand, RosterTableView, RosterUpdate, RuntimePreparationView } from './contracts.js'
+import type { BridgeCommand, BridgeResponse, ConfigurationUpdate, ConfigurationView, ManagementAnalyticsFilter, ManagementAnalyticsPersonView, ManagementAnalyticsView, ManagementRunView, PersonalAccountUpdate, PersonalAttendanceView, PersonalAutomationView, PersonalMakeupSubmit, PersonalMakeupView, PersonalReminderDeliveryComplete, PersonalReminderDeliveryReservation, PersonalReminderDeliveryReserve, PersonalReminderSettingsUpdate, PersonalRosterUpdate, PersonalRosterView, PersonalScheduleUpdate, PersonalStartupClaim, PersonalStartupClaimResult, ReadCommand, RosterTableView, RosterUpdate, RuntimePreparationView } from './contracts.js'
 import { prepareRuntime, RuntimeBootstrapError, type RuntimeBootstrapResult } from './runtime-bootstrap.js'
 
 const MAX_STDOUT_BYTES = 2 * 1024 * 1024
@@ -90,6 +90,29 @@ export class AttendanceBridge {
     return response.data as PersonalAutomationView
   }
 
+  async updatePersonalReminderSettings(settings: PersonalReminderSettingsUpdate): Promise<PersonalAutomationView> {
+    const response = await this.invoke('personal-reminder-settings-update', settings)
+    if (!response.ok || response.data === undefined) throw new BridgeError(response.error?.code ?? 'BRIDGE_FAILED', response.error?.message ?? '个人提醒配置保存失败。')
+    return response.data as PersonalAutomationView
+  }
+
+  async reservePersonalReminder(settings: PersonalReminderDeliveryReserve): Promise<PersonalReminderDeliveryReservation> {
+    const response = await this.invoke('personal-reminder-delivery-reserve', settings)
+    if (!response.ok || response.data === undefined) throw new BridgeError(response.error?.code ?? 'BRIDGE_FAILED', response.error?.message ?? '提醒去重状态保存失败。')
+    return response.data as PersonalReminderDeliveryReservation
+  }
+
+  async completePersonalReminder(settings: PersonalReminderDeliveryComplete): Promise<void> {
+    const response = await this.invoke('personal-reminder-delivery-complete', settings)
+    if (!response.ok) throw new BridgeError(response.error?.code ?? 'BRIDGE_FAILED', response.error?.message ?? '提醒投递状态保存失败。')
+  }
+
+  async claimPersonalStartup(settings: PersonalStartupClaim): Promise<PersonalStartupClaimResult> {
+    const response = await this.invoke('personal-startup-claim', settings)
+    if (!response.ok || response.data === undefined) throw new BridgeError(response.error?.code ?? 'BRIDGE_FAILED', response.error?.message ?? '启动巡检去重状态保存失败。')
+    return response.data as PersonalStartupClaimResult
+  }
+
   async updateRoster(settings: RosterUpdate): Promise<RosterTableView> {
     if (!existsSync(this.bridgePath)) throw new BridgeError('BACKEND_UNAVAILABLE', '未找到 iEPMS 本地桥接程序。')
     const response = await this.invoke('roster-update', settings)
@@ -111,7 +134,7 @@ export class AttendanceBridge {
     return response.data as PersonalMakeupView
   }
 
-  private async invoke(command: BridgeCommand, settings?: ConfigurationUpdate | ManagementAnalyticsFilter | PersonalAccountUpdate | PersonalScheduleUpdate | PersonalMakeupSubmit | RosterUpdate | PersonalRosterUpdate | Record<string, never>): Promise<BridgeResponse<unknown>> {
+  private async invoke(command: BridgeCommand, settings?: ConfigurationUpdate | ManagementAnalyticsFilter | PersonalAccountUpdate | PersonalScheduleUpdate | PersonalReminderSettingsUpdate | PersonalReminderDeliveryReserve | PersonalReminderDeliveryComplete | PersonalStartupClaim | PersonalMakeupSubmit | RosterUpdate | PersonalRosterUpdate | Record<string, never>): Promise<BridgeResponse<unknown>> {
     const runtime = await this.prepareRuntime()
     return new Promise((resolveResult, reject) => {
       const child = spawn(runtime.pythonPath, [this.bridgePath], {

@@ -5,7 +5,7 @@ export const CLIENT_NAME = 'dashboard-web'
 
 export type ReadCommand = 'status' | 'roster-summary' | 'roster-read' | 'personal-roster-read' | 'recent-runs' | 'schedule-status' | 'configuration-read' | 'personal-attendance' | 'personal-automation-read' | 'personal-makeup-read' | 'management-run-read' | 'management-log-read'
 export type AnalyticsReadCommand = 'management-analytics-read' | 'management-analytics-person-read'
-export type BridgeCommand = ReadCommand | AnalyticsReadCommand | 'configuration-update' | 'roster-update' | 'personal-roster-update' | 'personal-account-update' | 'personal-run-start' | 'personal-schedule-update' | 'personal-makeup-submit' | 'management-run-start'
+export type BridgeCommand = ReadCommand | AnalyticsReadCommand | 'configuration-update' | 'roster-update' | 'personal-roster-update' | 'personal-account-update' | 'personal-run-start' | 'personal-schedule-update' | 'personal-reminder-settings-update' | 'personal-reminder-delivery-reserve' | 'personal-reminder-delivery-complete' | 'personal-startup-claim' | 'personal-makeup-submit' | 'management-run-start'
 
 export interface BridgeResponse<T> {
   ok: boolean
@@ -79,6 +79,40 @@ export interface PersonalScheduleUpdate {
   times: string[]
 }
 
+export type PersonalShiftType = 'day' | 'night' | 'flexible' | 'off'
+export interface PersonalReminderSettings {
+  startupInspection: boolean
+  usePet: boolean
+  fallbackNotification: boolean
+  nightSafety: boolean
+  shiftType: PersonalShiftType
+}
+export interface PersonalReminderSettingsUpdate extends PersonalReminderSettings {}
+export type AttendanceReminderType = 'missing-clock-in' | 'missing-clock-out' | 'makeup-window' | 'night-safety' | 'sync-failed'
+export type AttendanceReminderChannel = 'pet' | 'desktop' | 'plugin'
+export interface PersonalReminderDeliveryView {
+  eventId: string
+  type: AttendanceReminderType
+  channel: AttendanceReminderChannel
+  status: 'pending' | 'delivered' | 'failed'
+  deliveredAt: string
+}
+export interface PersonalReminderDeliveryReserve {
+  eventId: string
+  attendanceDate: string
+  type: AttendanceReminderType
+  channel: AttendanceReminderChannel
+  expiresAt: string
+}
+export interface PersonalReminderDeliveryReservation { allowed: boolean; duplicateOf?: string }
+export interface PersonalReminderDeliveryComplete {
+  eventId: string
+  channel: AttendanceReminderChannel
+  status: 'delivered' | 'failed'
+}
+export interface PersonalStartupClaim { attendanceDate: string }
+export interface PersonalStartupClaimResult { claimed: boolean }
+
 export interface PersonalAutomationView {
   state: 'idle' | 'running' | 'success' | 'error'
   lastRunAt: string
@@ -87,6 +121,8 @@ export interface PersonalAutomationView {
   accountConfigured: boolean
   loginReady: boolean
   schedule: { enabled: boolean; times: string[] }
+  reminders: PersonalReminderSettings
+  lastReminder: PersonalReminderDeliveryView | null
 }
 
 export interface ManagementRunView {

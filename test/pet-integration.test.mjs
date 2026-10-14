@@ -20,7 +20,8 @@ test('does not require PET and still performs startup inspection', async () => {
     async start() { throw new Error('not expected') },
     async status() { throw new Error('not expected') },
   }
-  const dispose = installPetAttendanceIntegration(runtimeWith(undefined), service, { wait: async () => {} })
+  const bridge = { async read() { return { reminders: { startupInspection: false, usePet: true, fallbackNotification: true, nightSafety: false, shiftType: 'day' } } } }
+  const dispose = installPetAttendanceIntegration(runtimeWith(undefined), service, bridge, { wait: async () => {} })
   await new Promise(resolve => setImmediate(resolve))
   dispose()
   assert.equal(automatic, 1)
@@ -44,7 +45,8 @@ test('registers a PET action and maps a successful button inspection', async () 
     },
     async status() { throw new Error('status is not needed') },
   }
-  const dispose = installPetAttendanceIntegration(runtimeWith(pet), service, { wait: async () => {} })
+  const bridge = { async read() { throw new Error('not needed') } }
+  const dispose = installPetAttendanceIntegration(runtimeWith(pet), service, bridge, { wait: async () => {} })
   assert.equal(action.id, 'attendance-check')
   await new Promise(resolve => setImmediate(resolve))
   await action.onSelect()
@@ -70,7 +72,8 @@ test('repeated PET clicks do not start concurrent inspections', async () => {
     },
     async status() { throw new Error('status is not needed') },
   }
-  const dispose = installPetAttendanceIntegration(runtimeWith(pet), service, { wait: async () => {} })
+  const bridge = { async read() { throw new Error('not needed') } }
+  const dispose = installPetAttendanceIntegration(runtimeWith(pet), service, bridge, { wait: async () => {} })
   const first = action.onSelect()
   await new Promise(resolve => setImmediate(resolve))
   const second = action.onSelect()

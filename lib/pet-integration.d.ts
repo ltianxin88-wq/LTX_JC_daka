@@ -1,7 +1,12 @@
+import type { AttendanceBridge } from './bridge.js';
 import type { PersonalInspectionInternalService, PersonalInspectionResult } from './personal-inspection-service.js';
+import { type AttendanceReminderEvent } from './reminder-events.js';
 import type { RuntimeContextLike } from './runtime.js';
 export interface PetIntegrationLike {
     announce(input: unknown): {
+        ok: boolean;
+    };
+    announceAttendanceReminder?(event: AttendanceReminderEvent): {
         ok: boolean;
     };
     registerPanelAction(action: {
@@ -23,6 +28,6 @@ export interface PetIntegrationOptions {
  * Startup inspection is also attempted here and is a no-op without a saved
  * personal account.
  */
-export declare function installPetAttendanceIntegration(runtime: RuntimeContextLike, service: PersonalInspectionInternalService, options?: PetIntegrationOptions): () => void;
+export declare function installPetAttendanceIntegration(runtime: RuntimeContextLike, service: PersonalInspectionInternalService, bridge: AttendanceBridge, options?: PetIntegrationOptions): () => void;
 export declare function toPetAnnouncement(result: PersonalInspectionResult, progress?: number): Record<string, unknown>;
 //# sourceMappingURL=pet-integration.d.ts.map

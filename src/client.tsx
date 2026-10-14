@@ -20,7 +20,7 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   API_PREFIX, CLIENT_HEADER, CLIENT_NAME, PLUGIN_ID,
-  type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type ManagementAnalyticsPersonView, type ManagementAnalyticsRow, type ManagementAnalyticsView, type ManagementRunView,
+  type AttendanceReminderType, type ConfigurationUpdate, type ConfigurationView, type DashboardSnapshot, type ManagementAnalyticsPersonView, type ManagementAnalyticsRow, type ManagementAnalyticsView, type ManagementRunView,
   type PersonalAttendanceRecord, type PersonalAttendanceStatus, type PersonalAttendanceView, type PersonalAutomationView, type PersonalMakeupView, type PersonalRosterView, type RuntimePreparationView,
   type RosterRow, type RosterTableView,
 } from './contracts.js'
@@ -613,12 +613,15 @@ function PersonalAutomationPanel({ value, onChanged }: { value: PersonalAutomati
   const [eveningTime, setEveningTime] = useState(initialTimes[1] ?? '18:15')
   const [starting, setStarting] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [savingReminders, setSavingReminders] = useState(false)
+  const [reminders, setReminders] = useState(value.reminders)
   const [message, setMessage] = useState<{ kind: 'success' | 'error'; text: string }>()
   useEffect(() => {
     setEnabled(value.schedule.enabled)
     if (value.schedule.times[0]) setMorningTime(value.schedule.times[0])
     if (value.schedule.times[1]) setEveningTime(value.schedule.times[1])
-  }, [value.schedule.enabled, value.schedule.times.join('|')])
+    setReminders(value.reminders)
+  }, [value.schedule.enabled, value.schedule.times.join('|'), JSON.stringify(value.reminders)])
   const ready = value.accountConfigured && value.loginReady
   const running = value.state === 'running'
   const start = async (): Promise<void> => {
@@ -649,6 +652,20 @@ function PersonalAutomationPanel({ value, onChanged }: { value: PersonalAutomati
       setMessage({ kind: 'error', text: error instanceof Error ? error.message : '个人定时巡检保存失败。' })
     } finally { setSaving(false) }
   }
+  const saveReminders = async (): Promise<void> => {
+    setSavingReminders(true)
+    setMessage(undefined)
+    try {
+      const next = await requestApi<PersonalAutomationView>('personal-reminders', {
+        method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(reminders),
+      })
+      if (!isPersonalAutomation(next)) throw new Error('个人提醒服务返回了无效数据。')
+      onChanged(next)
+      setMessage({ kind: 'success', text: '启动巡检与提醒设置已保存。' })
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof Error ? error.message : '个人提醒设置保存失败。' })
+    } finally { setSavingReminders(false) }
+  }
   const stateText = running ? '执行中' : value.state === 'success' ? '上次成功' : value.state === 'error' ? '上次失败' : '尚未执行'
   return <section className="iepms-personal-automation" aria-label="个人巡检设置">
     <header>
@@ -662,11 +679,28 @@ function PersonalAutomationPanel({ value, onChanged }: { value: PersonalAutomati
       <label><span>下班同步</span><input type="time" value={eveningTime} disabled={!ready || !enabled || saving} onChange={event => { setEveningTime(event.target.value) }} /></label>
       <button type="button" className="iepms-personal-schedule-save" disabled={!ready || saving} onClick={() => { void saveSchedule() }}>{saving ? '保存中…' : '保存定时'}</button>
     </div>
+    <div className="iepms-personal-reminders">
+      <label className="iepms-personal-schedule-toggle"><input type="checkbox" checked={reminders.startupInspection} disabled={!ready || savingReminders} onChange={event => { setReminders(current => ({ ...current, startupInspection: event.target.checked })) }} /><span><strong>启动巡检</strong><small>每天首次启动桌面端时巡检一次</small></span></label>
+      <label className="iepms-personal-schedule-toggle"><input type="checkbox" checked={reminders.usePet} disabled={savingReminders} onChange={event => { setReminders(current => ({ ...current, usePet: event.target.checked })) }} /><span><strong>PET 提醒</strong><small>PET 可用时由宠物展示</small></span></label>
+      <label className="iepms-personal-schedule-toggle"><input type="checkbox" checked={reminders.fallbackNotification} disabled={savingReminders} onChange={event => { setReminders(current => ({ ...current, fallbackNotification: event.target.checked })) }} /><span><strong>降级提醒</strong><small>PET 不可用时使用桌面或插件提醒</small></span></label>
+      <label className="iepms-personal-schedule-toggle"><input type="checkbox" checked={reminders.nightSafety} disabled={savingReminders || reminders.shiftType !== 'night'} onChange={event => { setReminders(current => ({ ...current, nightSafety: event.target.checked })) }} /><span><strong>夜班安全提醒</strong><small>仅夜班班次生效</small></span></label>
+      <label className="iepms-personal-shift"><span>个人班次</span><select value={reminders.shiftType} disabled={savingReminders} onChange={event => { setReminders(current => ({ ...current, shiftType: event.target.value as typeof current.shiftType, nightSafety: event.target.value === 'night' ? current.nightSafety : false })) }}><option value="day">日班</option><option value="night">夜班</option><option value="flexible">弹性班</option><option value="off">休息</option></select></label>
+      <button type="button" className="iepms-personal-schedule-save" disabled={!ready || savingReminders} onClick={() => { void saveReminders() }}>{savingReminders ? '保存中…' : '保存提醒'}</button>
+    </div>
     {!value.accountConfigured && <p className="iepms-personal-automation-hint is-error">请先配置个人考勤账号。</p>}
     {value.accountConfigured && !value.loginReady && <p className="iepms-personal-automation-hint is-error">执行巡检需要登录 iEPMS，请先在管理版配置登录账号和密码。</p>}
     {value.message && <p className={`iepms-personal-automation-hint is-${value.state === 'error' ? 'error' : 'status'}`} role={value.state === 'error' ? 'alert' : 'status'}>插件提醒：{value.message}</p>}
+    {value.lastReminder?.status === 'delivered' && value.lastReminder.channel !== 'pet' && <p className="iepms-personal-automation-hint is-warning" role="status">最近提醒已通过{value.lastReminder.channel === 'desktop' ? '桌面通知' : '插件内'}送达：{reminderTypeLabel(value.lastReminder.type)}（{value.lastReminder.deliveredAt.replace('T', ' ')}）</p>}
     {message !== undefined && <p className={`iepms-personal-automation-hint is-${message.kind}`} role={message.kind === 'error' ? 'alert' : 'status'}>{message.text}</p>}
   </section>
+}
+
+function reminderTypeLabel(type: AttendanceReminderType): string {
+  return type === 'missing-clock-in' ? '尚未查询到上班打卡'
+    : type === 'missing-clock-out' ? '尚未查询到下班打卡'
+      : type === 'makeup-window' ? '仍在补卡时限内'
+        : type === 'night-safety' ? '夜班安全提醒'
+          : '暂时无法确认打卡状态'
 }
 
 function PersonalMetric({ icon, label, value, detail, tone }: { icon: React.ReactNode; label: string; value: string; detail: string; tone: 'blue' | 'green' | 'orange' | 'muted' }) {
@@ -795,7 +829,8 @@ function isPersonalAttendance(value: unknown): value is PersonalAttendanceView {
 function isPersonalAutomation(value: unknown): value is PersonalAutomationView {
   if (value === null || typeof value !== 'object' || !('state' in value) || !('schedule' in value)) return false
   const record = value as Partial<PersonalAutomationView>
-  return ['idle', 'running', 'success', 'error'].includes(String(record.state)) && typeof record.accountConfigured === 'boolean' && typeof record.loginReady === 'boolean' && record.schedule !== undefined && typeof record.schedule.enabled === 'boolean' && Array.isArray(record.schedule.times)
+  const reminders = record.reminders as PersonalAutomationView['reminders'] | undefined
+  return ['idle', 'running', 'success', 'error'].includes(String(record.state)) && typeof record.accountConfigured === 'boolean' && typeof record.loginReady === 'boolean' && record.schedule !== undefined && typeof record.schedule.enabled === 'boolean' && Array.isArray(record.schedule.times) && reminders !== undefined && typeof reminders.startupInspection === 'boolean' && typeof reminders.usePet === 'boolean' && typeof reminders.fallbackNotification === 'boolean' && typeof reminders.nightSafety === 'boolean' && ['day', 'night', 'flexible', 'off'].includes(reminders.shiftType)
 }
 function isPersonalMakeup(value: unknown): value is PersonalMakeupView {
   if (value === null || typeof value !== 'object' || !('configured' in value) || !('items' in value)) return false

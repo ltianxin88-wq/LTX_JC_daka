@@ -37,7 +37,7 @@ SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 512 * 1024
 READ_COMMANDS = {"status", "roster-summary", "roster-read", "personal-roster-read", "recent-runs", "schedule-status", "configuration-read", "personal-attendance", "personal-automation-read", "personal-makeup-read", "management-run-read", "management-log-read", "management-analytics-read", "management-analytics-person-read"}
 FILTERED_READ_COMMANDS = {"management-analytics-read", "management-analytics-person-read"}
-WRITE_COMMANDS = {"configuration-update", "roster-update", "personal-roster-update", "personal-account-update", "personal-run-start", "personal-schedule-update", "personal-makeup-submit", "management-run-start"}
+WRITE_COMMANDS = {"configuration-update", "roster-update", "personal-roster-update", "personal-account-update", "personal-run-start", "personal-schedule-update", "personal-reminder-settings-update", "personal-reminder-delivery-reserve", "personal-reminder-delivery-complete", "personal-startup-claim", "personal-makeup-submit", "management-run-start"}
 ALLOWED_COMMANDS = READ_COMMANDS | WRITE_COMMANDS
 SCRIPT_ROOT = Path(__file__).resolve().parent
 RUNTIME_ROOT = SCRIPT_ROOT / "runtime"
@@ -364,6 +364,35 @@ def ensure_plugin_database() -> None:
             );
             CREATE INDEX IF NOT EXISTS personal_makeup_request_account_index
             ON personal_makeup_requests(account_hash, attendance_date);
+            CREATE TABLE IF NOT EXISTS personal_reminder_settings (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                startup_inspection INTEGER NOT NULL DEFAULT 0,
+                use_pet INTEGER NOT NULL DEFAULT 1,
+                fallback_notification INTEGER NOT NULL DEFAULT 1,
+                night_safety INTEGER NOT NULL DEFAULT 0,
+                shift_type TEXT NOT NULL DEFAULT 'day'
+                    CHECK (shift_type IN ('day', 'night', 'flexible', 'off'))
+            );
+            INSERT OR IGNORE INTO personal_reminder_settings (singleton) VALUES (1);
+            CREATE TABLE IF NOT EXISTS personal_reminder_delivery (
+                event_id TEXT PRIMARY KEY,
+                account_hash TEXT NOT NULL,
+                attendance_date TEXT NOT NULL,
+                reminder_type TEXT NOT NULL,
+                channel TEXT NOT NULL CHECK (channel IN ('pet', 'desktop', 'plugin')),
+                status TEXT NOT NULL CHECK (status IN ('pending', 'delivered', 'failed')),
+                created_at TEXT NOT NULL,
+                delivered_at TEXT NOT NULL DEFAULT '',
+                expires_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS personal_reminder_delivery_dedup_index
+            ON personal_reminder_delivery(account_hash, attendance_date, reminder_type, created_at);
+            CREATE TABLE IF NOT EXISTS personal_startup_run (
+                account_hash TEXT NOT NULL,
+                attendance_date TEXT NOT NULL,
+                claimed_at TEXT NOT NULL,
+                PRIMARY KEY (account_hash, attendance_date)
+            );
             CREATE TABLE IF NOT EXISTS management_run_state (
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                 state TEXT NOT NULL,
@@ -667,6 +696,189 @@ def personal_schedule_settings() -> tuple[bool, list[str]]:
         connection.close()
 
 
+REMINDER_TYPES = {"missing-clock-in", "missing-clock-out", "makeup-window", "night-safety", "sync-failed"}
+REMINDER_CHANNELS = {"pet", "desktop", "plugin"}
+
+
+def personal_reminder_settings() -> dict[str, Any]:
+    ensure_plugin_database()
+    connection = database_connection()
+    try:
+        row = connection.execute(
+            "SELECT startup_inspection, use_pet, fallback_notification, night_safety, shift_type "
+            "FROM personal_reminder_settings WHERE singleton = 1"
+        ).fetchone()
+        return {
+            "startupInspection": bool(row["startup_inspection"]),
+            "usePet": bool(row["use_pet"]),
+            "fallbackNotification": bool(row["fallback_notification"]),
+            "nightSafety": bool(row["night_safety"]),
+            "shiftType": str(row["shift_type"]),
+        }
+    finally:
+        connection.close()
+
+
+def update_personal_reminder_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    expected = {"startupInspection", "usePet", "fallbackNotification", "nightSafety", "shiftType"}
+    if set(settings) != expected:
+        raise BridgeInputError("个人提醒配置格式无效。")
+    if any(not isinstance(settings[key], bool) for key in expected - {"shiftType"}):
+        raise BridgeInputError("个人提醒开关必须为布尔值。")
+    if settings["shiftType"] not in {"day", "night", "flexible", "off"}:
+        raise BridgeInputError("个人班次类型无效。")
+    if settings["startupInspection"]:
+        ensure_personal_run_ready()
+    ensure_plugin_database()
+    connection = database_connection()
+    try:
+        connection.execute(
+            """UPDATE personal_reminder_settings SET startup_inspection = ?, use_pet = ?,
+            fallback_notification = ?, night_safety = ?, shift_type = ? WHERE singleton = 1""",
+            (int(settings["startupInspection"]), int(settings["usePet"]),
+             int(settings["fallbackNotification"]), int(settings["nightSafety"]), settings["shiftType"]),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    return personal_automation_view()
+
+
+def parse_iso_datetime(value: Any, field: str) -> datetime:
+    if not isinstance(value, str) or len(value) > 40:
+        raise BridgeInputError(f"{field} 格式无效。")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        # Node serializes Date values as UTC (`...Z`).  All persisted bridge
+        # timestamps are local naive values, so convert the instant to the
+        # machine timezone before removing tzinfo; simply stripping `Z` makes
+        # a future event look eight hours old on an Asia/Shanghai desktop.
+        return parsed.astimezone().replace(tzinfo=None) if parsed.tzinfo is not None else parsed
+    except ValueError as exc:
+        raise BridgeInputError(f"{field} 格式无效。") from exc
+
+
+def reserve_personal_reminder_delivery(settings: dict[str, Any]) -> dict[str, Any]:
+    expected = {"eventId", "attendanceDate", "type", "channel", "expiresAt"}
+    if set(settings) != expected or not all(isinstance(settings.get(key), str) for key in expected):
+        raise BridgeInputError("提醒投递请求格式无效。")
+    event_id = settings["eventId"].strip()
+    attendance_date = settings["attendanceDate"].strip()
+    reminder_type = settings["type"]
+    channel = settings["channel"]
+    if not re.fullmatch(r"[A-Za-z0-9-]{12,100}", event_id):
+        raise BridgeInputError("提醒事件标识无效。")
+    try:
+        datetime.strptime(attendance_date, "%Y-%m-%d")
+    except ValueError as exc:
+        raise BridgeInputError("提醒考勤日期无效。") from exc
+    if reminder_type not in REMINDER_TYPES or channel not in REMINDER_CHANNELS:
+        raise BridgeInputError("提醒类型或投递渠道无效。")
+    expires_at = parse_iso_datetime(settings["expiresAt"], "提醒过期时间")
+    now = current_local_datetime()
+    if expires_at <= now or expires_at > now + timedelta(days=7):
+        raise BridgeInputError("提醒过期时间无效。")
+    account = personal_account()
+    if not account:
+        raise BridgeInputError("请先配置个人考勤账号。")
+    account_hash = hashlib.sha256(account.encode("utf-8")).hexdigest()
+    cutoff = (now - timedelta(hours=6)).isoformat(timespec="seconds")
+    ensure_plugin_database()
+    connection = database_connection()
+    try:
+        connection.execute("DELETE FROM personal_reminder_delivery WHERE expires_at < ?", (now.isoformat(timespec="seconds"),))
+        duplicate = connection.execute(
+            """SELECT event_id FROM personal_reminder_delivery
+            WHERE account_hash = ? AND attendance_date = ? AND reminder_type = ?
+              AND status IN ('pending', 'delivered') AND created_at >= ?
+            ORDER BY created_at DESC LIMIT 1""",
+            (account_hash, attendance_date, reminder_type, cutoff),
+        ).fetchone()
+        if duplicate is not None:
+            connection.commit()
+            return {"allowed": False, "duplicateOf": str(duplicate["event_id"])}
+        created_at = now.isoformat(timespec="seconds")
+        connection.execute(
+            """INSERT INTO personal_reminder_delivery
+            (event_id, account_hash, attendance_date, reminder_type, channel, status, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)""",
+            (event_id, account_hash, attendance_date, reminder_type, channel, created_at, expires_at.isoformat(timespec="seconds")),
+        )
+        connection.commit()
+        return {"allowed": True}
+    finally:
+        connection.close()
+
+
+def complete_personal_reminder_delivery(settings: dict[str, Any]) -> dict[str, Any]:
+    if set(settings) != {"eventId", "channel", "status"} or settings.get("channel") not in REMINDER_CHANNELS or settings.get("status") not in {"delivered", "failed"}:
+        raise BridgeInputError("提醒投递结果格式无效。")
+    event_id = str(settings.get("eventId", "")).strip()
+    if not re.fullmatch(r"[A-Za-z0-9-]{12,100}", event_id):
+        raise BridgeInputError("提醒事件标识无效。")
+    ensure_plugin_database()
+    connection = database_connection()
+    try:
+        cursor = connection.execute(
+            "UPDATE personal_reminder_delivery SET channel = ?, status = ?, delivered_at = ? WHERE event_id = ?",
+            (settings["channel"], settings["status"], datetime.now().isoformat(timespec="seconds"), event_id),
+        )
+        if cursor.rowcount != 1:
+            raise BridgeInputError("提醒事件不存在。")
+        connection.commit()
+        return {"ok": True}
+    finally:
+        connection.close()
+
+
+def claim_personal_startup(settings: dict[str, Any]) -> dict[str, Any]:
+    if set(settings) != {"attendanceDate"} or not isinstance(settings.get("attendanceDate"), str):
+        raise BridgeInputError("启动巡检请求格式无效。")
+    attendance_date = settings["attendanceDate"]
+    try:
+        datetime.strptime(attendance_date, "%Y-%m-%d")
+    except ValueError as exc:
+        raise BridgeInputError("启动巡检日期无效。") from exc
+    account = personal_account()
+    if not account:
+        return {"claimed": False}
+    account_hash = hashlib.sha256(account.encode("utf-8")).hexdigest()
+    ensure_plugin_database()
+    connection = database_connection()
+    try:
+        cursor = connection.execute(
+            "INSERT OR IGNORE INTO personal_startup_run (account_hash, attendance_date, claimed_at) VALUES (?, ?, ?)",
+            (account_hash, attendance_date, datetime.now().isoformat(timespec="seconds")),
+        )
+        connection.execute("DELETE FROM personal_startup_run WHERE attendance_date < ?", ((date.today() - timedelta(days=30)).isoformat(),))
+        connection.commit()
+        return {"claimed": cursor.rowcount == 1}
+    finally:
+        connection.close()
+
+
+def last_personal_reminder_delivery() -> dict[str, Any] | None:
+    account = personal_account()
+    if not account:
+        return None
+    ensure_plugin_database()
+    connection = database_connection()
+    try:
+        row = connection.execute(
+            """SELECT event_id, reminder_type, channel, status, delivered_at, created_at
+            FROM personal_reminder_delivery WHERE account_hash = ?
+            ORDER BY created_at DESC LIMIT 1""",
+            (hashlib.sha256(account.encode("utf-8")).hexdigest(),),
+        ).fetchone()
+        if row is None:
+            return None
+        return {"eventId": str(row["event_id"]), "type": str(row["reminder_type"]),
+                "channel": str(row["channel"]), "status": str(row["status"]),
+                "deliveredAt": str(row["delivered_at"] or row["created_at"])}
+    finally:
+        connection.close()
+
+
 def normalize_clock(value: Any) -> str:
     text = str(value or "").strip()
     match = re.search(r"(?:^|\s)(\d{1,2}):(\d{2})(?::\d{2})?$", text)
@@ -846,7 +1058,8 @@ def current_local_datetime() -> datetime:
     test_value = os.environ.get("IEPMS_BRIDGE_TEST_NOW", "")
     if test_value:
         try:
-            return datetime.fromisoformat(test_value)
+            parsed = datetime.fromisoformat(test_value.replace("Z", "+00:00"))
+            return parsed.astimezone().replace(tzinfo=None) if parsed.tzinfo is not None else parsed
         except ValueError:
             pass
     return datetime.now()
@@ -1342,6 +1555,8 @@ def personal_automation_view() -> dict[str, Any]:
         "accountConfigured": bool(configured_account),
         "loginReady": personal_login_ready(config) if valid else False,
         "schedule": {"enabled": enabled, "times": times},
+        "reminders": personal_reminder_settings(),
+        "lastReminder": last_personal_reminder_delivery(),
     }
 
 
@@ -1756,6 +1971,10 @@ def main() -> int:
             "personal-account-update": lambda: update_personal_account(settings or {}),
             "personal-run-start": lambda: start_personal_run(settings or {}),
             "personal-schedule-update": lambda: update_personal_schedule(settings or {}),
+            "personal-reminder-settings-update": lambda: update_personal_reminder_settings(settings or {}),
+            "personal-reminder-delivery-reserve": lambda: reserve_personal_reminder_delivery(settings or {}),
+            "personal-reminder-delivery-complete": lambda: complete_personal_reminder_delivery(settings or {}),
+            "personal-startup-claim": lambda: claim_personal_startup(settings or {}),
             "personal-makeup-submit": lambda: submit_personal_makeup(settings or {}),
             "management-run-start": lambda: start_management_run(settings or {}),
         }

@@ -27,6 +27,11 @@ export interface PersonalInspectionInternalService extends PersonalInspectionSer
 interface InspectionBridge {
     startPersonalRun(): Promise<PersonalAutomationView>;
     read<T>(command: 'personal-automation-read' | 'personal-attendance'): Promise<T>;
+    claimPersonalStartup(settings: {
+        attendanceDate: string;
+    }): Promise<{
+        claimed: boolean;
+    }>;
 }
 export declare function createPersonalInspectionService(bridge: InspectionBridge | AttendanceBridge): PersonalInspectionInternalService;
 export {};
